@@ -1810,6 +1810,7 @@ function describeGeminiError(status, data, model) {
   const msg = err.message || '';
   const all = msg + ' ' + JSON.stringify(err.details || '');
   if (/API_KEY_INVALID|API key not valid|API key expired/i.test(all)) return 'A Gemini API Key é inválida ou expirou. Confira em Configurações.';
+  if (status === 402) return 'Os créditos pré-pagos do Gemini deste projeto acabaram (erro 402). Adicione créditos no faturamento do AI Studio ou crie uma chave em um projeto novo, sem faturamento, para usar o nível gratuito.';
   if (status === 429) return 'Cota do Gemini excedida (limite por minuto ou por dia do nível gratuito). Aguarde um pouco e tente de novo.';
   if (status === 403) return 'O Google negou acesso ao Gemini: a chave pode estar restrita a outros sites/APIs ou a API está desativada. ' + msg;
   if (status === 404) return `Modelo "${model}" não encontrado. Ajuste o modelo em Configurações.`;
@@ -2006,8 +2007,8 @@ ${text}`;
     console.warn(e);
     $('#summaryError').textContent = e?.message || String(e);
     this.setView('error');
-    $('#btnSummaryKey').hidden = !(e?.code === 'NO_GEMINI' || /API Key/i.test(e?.message || ''));
-    $('#btnSummaryRedo').hidden = e?.code === 'NO_GEMINI';
+    $('#btnSummaryKey').hidden = !(e?.code === 'NO_GEMINI' || e?.status === 402 || /API Key/i.test(e?.message || ''));
+    $('#btnSummaryRedo').hidden = e?.code === 'NO_GEMINI' || e?.status === 402; // 402 não adianta repetir
   },
 };
 
