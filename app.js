@@ -1297,16 +1297,24 @@ const Settings = {
     $('#pitchNote').hidden = !chirp;
   },
 
-  saveGemini() {
-    const key = $('#geminiKey').value.trim();
+  async saveGemini() {
+    // Remove aspas e espaços/quebras de linha que às vezes vêm junto ao copiar.
+    // O formato da chave não é validado aqui: quem decide se ela vale é o Google (teste abaixo).
+    const key = $('#geminiKey').value.trim().replace(/^["'`]+|["'`]+$/g, '').replace(/\s+/g, '');
     const model = $('#geminiModel').value.trim();
     const cur = store.get(K.gemini) || {};
     if (!key && !cur.key) return toast('Cole a Gemini API Key primeiro.');
-    if (key && !/^[\w-]{30,}$/.test(key)) return toast('Essa chave não parece uma Gemini API Key (normalmente começa com "AIza").', { error: true });
+    if (key && key.length < 20) return toast('Essa chave parece incompleta. Confira se copiou ela inteira.', { error: true });
     store.set(K.gemini, { key: key || cur.key, model });
     $('#geminiKey').value = '';
     this.renderGemini();
-    toast('Configuração do Gemini salva.');
+    toast('Chave salva. Testando com o Google…');
+    try {
+      await Gemini.check();
+      toast('Chave do Gemini OK ✓');
+    } catch (e) {
+      handleError(e);
+    }
   },
 
   renderGemini() {
@@ -1812,6 +1820,21 @@ function describeGeminiError(status, data, model) {
 
 const Gemini = {
   has() { return !!store.get(K.gemini)?.key; },
+
+  /** Valida a chave listando modelos (não gera texto, não consome cota de geração). */
+  async check() {
+    const key = store.get(K.gemini)?.key;
+    let res;
+    try {
+      res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', { headers: { 'x-goog-api-key': key } });
+    } catch {
+      throw new AppError('Sem conexão com o Gemini. Verifique a internet.', { code: 'NET' });
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new AppError(describeGeminiError(res.status, data, ''), { code: 'GEMINI', status: res.status });
+    }
+  },
 
   async summarize(prompt) {
     const cfg = store.get(K.gemini) || {};
