@@ -7,10 +7,11 @@ PWA para ouvir textos, livros ePub e PDFs com as vozes **Neural2** e **Chirp 3 H
 
 - **Texto:** cole um texto e toque em *Ouvir*. O trecho em leitura fica destacado; toque em outro trecho para pular até ele.
 - **Livro:** abra `.epub` (renderizado com epub.js) ou `.pdf` (renderizado com pdf.js).
-  - O texto do capítulo ou página é dividido em trechos de até cerca de 900 caracteres, alinhados aos parágrafos e bem abaixo do limite de 5000 bytes da API.
-  - Os próximos 2 trechos são sintetizados enquanto o atual toca, para não haver pausas, inclusive na passagem de um capítulo para o outro.
-  - O progresso (capítulo/página, trecho e CFI) é salvo no `localStorage` a cada trecho. Ao reabrir o livro, o app pergunta se você quer continuar ou recomeçar.
-  - Use *Ler daqui* para começar pela página visível. No ePub, um toque duplo em um parágrafo começa a leitura por ele.
+  - O texto do capítulo ou página é dividido em trechos de no máximo um parágrafo (parágrafos longos viram vários trechos de até cerca de 900 caracteres), bem abaixo do limite de 5000 bytes da API.
+  - Os próximos 3 trechos são sintetizados enquanto o atual toca, para não haver pausas, inclusive na passagem de um capítulo para o outro.
+  - O progresso (capítulo/página, parágrafo, trecho e CFI) é salvo no `localStorage` a cada trecho. Ao reabrir o livro, o app pergunta se você quer continuar ou recomeçar.
+  - Use *Ler daqui* para começar pela página visível. No ePub, toque em um parágrafo para marcá-lo como ponto de início e depois em *▶ Ler daqui*; um toque duplo começa na hora. O parágrafo em leitura fica destacado.
+  - Ao parar (■), o app mostra **onde você parou**: capítulo, número do parágrafo, começo do parágrafo e a frase aproximada, com um botão para copiar o trecho e buscá-lo no Kindle. Tocar nas informações do player mostra isso a qualquer momento.
   - Os livros abertos recentemente ficam guardados no IndexedDB para reabrir com um toque.
 - **Player fixo:** reproduzir/pausar, voltar e avançar trecho, parar, timer de sono e controles na tela de bloqueio (Media Session).
 - **Configurações:** chave da Service Account (upload ou colar), tipo de voz, voz, velocidade, tom, contador de uso do mês e tema.

@@ -18,10 +18,10 @@ const SYNTH_URL = 'https://texttospeech.googleapis.com/v1/text:synthesize';
 const VOICES_URL = 'https://texttospeech.googleapis.com/v1/voices?languageCode=pt-BR';
 
 const FREE_TIER_CHARS = 1_000_000;
-const CHUNK_MIN = 250;   // agrupa parágrafos curtos até este tamanho
+const CHUNK_MIN = 250;   // agrupa parágrafos curtos até este tamanho (só no texto colado)
 const CHUNK_MAX = 900;   // ~1 min de áudio; bem abaixo do limite de 5000 bytes da API
 const SENTENCE_MAX = 400; // frases maiores que isso são quebradas (a API recusa frases longas demais)
-const PREFETCH = 2;      // trechos sintetizados à frente do atual
+const PREFETCH = 3;      // trechos sintetizados à frente do atual (livros: 1 trecho por parágrafo)
 const AUDIO_CACHE = 40;  // trechos de áudio mantidos em memória
 
 const FAMILY_NAME = { neural2: 'Neural2', chirp3hd: 'Chirp 3 HD' };
@@ -369,19 +369,24 @@ function splitLongSentence(s) {
 }
 
 /**
- * blocks: [{ text, ref }] (parágrafos em ordem). ref = CFI (ePub), página (PDF) ou índice.
- * Retorna [{ text, ref }] com tamanho adequado para a API, alinhados a parágrafos sempre que possível.
+ * blocks: [{ text, ref, heading }] (parágrafos em ordem). ref = CFI (ePub), página (PDF) ou índice.
+ * Retorna [{ text, ref, para, n }] com tamanho adequado para a API; para = índice do parágrafo em
+ * `blocks`; n = número do parágrafo como um leitor contaria (sem títulos nem separadores; 0 = título).
+ * group: junta parágrafos curtos no mesmo trecho. Sem ele (livros), todo trecho começa e termina
+ * dentro de um único parágrafo, o que permite começar e parar exatamente em um parágrafo.
  */
-function makeChunks(blocks) {
+function makeChunks(blocks, { group = true } = {}) {
   const chunks = [];
   let cur = null;
+  let count = 0;
   const flush = () => {
-    if (cur && cur.text.trim()) chunks.push({ text: cur.text.trim(), ref: cur.ref });
+    if (cur && cur.text.trim()) chunks.push({ text: cur.text.trim(), ref: cur.ref, para: cur.para, n: cur.n });
     cur = null;
   };
-  for (const b of blocks) {
+  for (const [para, b] of blocks.entries()) {
     let t = cleanText(b.text || '');
-    if (!t) continue;
+    if (!/[\p{L}\p{N}]/u.test(t)) continue; // vazio ou só símbolos ("* * *")
+    const n = b.heading ? 0 : ++count;
     if (/[\p{L}\p{N}]$/u.test(t)) t += '.'; // títulos sem pontuação ganham uma pausa
     let firstInBlock = true;
     for (const sentence of splitSentences(t)) {
@@ -391,19 +396,36 @@ function makeChunks(blocks) {
       if (pieces.length > 1) {
         // Partes de uma frase longa vão em requisições separadas.
         flush();
-        pieces.forEach((p) => chunks.push({ text: p, ref: b.ref }));
+        pieces.forEach((p) => chunks.push({ text: p, ref: b.ref, para, n }));
         firstInBlock = false;
         continue;
       }
       if (cur && cur.text.length + s.length + 1 > CHUNK_MAX) flush();
-      if (!cur) cur = { text: '', ref: b.ref };
+      if (!cur) cur = { text: '', ref: b.ref, para, n };
       cur.text += (cur.text ? (firstInBlock ? '\n' : ' ') : '') + s;
       firstInBlock = false;
     }
-    if (cur && cur.text.length >= CHUNK_MIN) flush();
+    if (cur && (!group || cur.text.length >= CHUNK_MIN)) flush();
   }
   flush();
   return chunks;
+}
+
+const paraLabel = (n) => (n ? `parágrafo ${n}` : 'título');
+
+/** Começo normalizado de um parágrafo: identifica o mesmo parágrafo no livro exibido e nos trechos. */
+const textKey = (t) => cleanText(t).replace(/\s+/g, '').slice(0, 32);
+
+/** Frase de `text` que estava sendo lida quando a fração `p` (0–1) do áudio já tinha tocado. */
+function sentenceAt(text, p) {
+  const sentences = splitSentences(text).map((s) => s.trim()).filter(Boolean);
+  const target = p * text.length;
+  let acc = 0;
+  for (const s of sentences) {
+    acc += s.length + 1;
+    if (acc > target) return s;
+  }
+  return sentences.at(-1) || text;
 }
 
 /* =====================================================================
@@ -466,12 +488,15 @@ function epubThemeCss() {
   const dark = document.documentElement.dataset.theme !== 'light';
   const fg = dark ? '#e8eaf0' : '#171a22';
   const link = dark ? '#7c9cff' : '#3355dd';
+  const cur = dark ? 'rgba(124,156,255,.2)' : 'rgba(51,85,221,.13)';
   return `:root{color-scheme:${dark ? 'dark' : 'light'}}
 html,body{background:transparent!important;color:${fg}!important}
 body{padding:8px 16px!important;line-height:1.65!important;font-size:1.05em}
 body *{color:inherit!important;background-color:transparent!important}
 a{color:${link}!important}
-img,svg{max-width:100%!important;height:auto!important}`;
+img,svg{max-width:100%!important;height:auto!important}
+body .lv-cur{background-color:${cur}!important;border-radius:4px;box-shadow:0 0 0 4px ${cur}}
+body .lv-sel{outline:2px dashed ${link};outline-offset:4px;border-radius:2px}`;
 }
 
 function styleEpubDoc(doc) {
@@ -483,6 +508,8 @@ function styleEpubDoc(doc) {
   }
   st.textContent = epubThemeCss();
 }
+
+const MARKS = ['lv-cur', 'lv-sel']; // parágrafo em leitura / escolhido como ponto de início
 
 const baseName = (href) => {
   const p = (href || '').split('#')[0];
@@ -537,9 +564,11 @@ class EpubSource {
           let ref = null;
           // Aponta para o início do texto do parágrafo (CFIs de elemento geram erros no epub.js ao exibir).
           try { ref = sec.cfiFromElement(b.el).replace(/\)$/, '/1:0)'); } catch { /* sem CFI */ }
-          return { text: b.text, ref };
+          return { text: b.text, ref, heading: /^h[1-6]$/i.test(b.el.localName || '') };
         });
-        return makeChunks(blocks);
+        const chunks = makeChunks(blocks, { group: false });
+        chunks.forEach((ch) => { ch.key = textKey(blocks[ch.para].text); });
+        return chunks;
       })();
       this.units.set(i, p);
       p.catch(() => this.units.delete(i));
@@ -549,20 +578,87 @@ class EpubSource {
 
   attach(el) {
     el.innerHTML = '';
+    this.marks = {};
+    this.viewBlockCache = new WeakMap();
     this.rendition = this.book.renderTo(el, {
       width: '100%', height: '100%', flow: 'scrolled-doc', allowScriptedContent: false,
     });
     this.rendition.hooks.content.register((contents) => {
-      styleEpubDoc(contents.document);
-      // Toque duplo em um parágrafo = ler a partir dele
-      contents.document.addEventListener('dblclick', (ev) => {
-        const target = ev.target?.closest?.('p,li,h1,h2,h3,h4,h5,h6,blockquote,dd,td,div');
-        if (!target) return;
+      const doc = contents.document;
+      styleEpubDoc(doc);
+      MARKS.forEach((cls) => this.applyMark(contents, cls));
+      // Toque em um parágrafo = escolher o ponto de início; toque duplo = ler a partir dele
+      doc.addEventListener('click', (ev) => {
+        if (ev.target?.closest?.('a') || doc.getSelection?.()?.isCollapsed === false) return;
+        this.pickAt(contents, ev.target).then((pick) => { if (pick) BookUI.select(pick); }).catch(handleError);
+      });
+      doc.addEventListener('dblclick', (ev) => {
+        if (ev.target?.closest?.('a')) return;
         Player.unlock();
-        try { BookUI.readFrom(contents.sectionIndex, contents.cfiFromNode(target)); } catch (e) { handleError(e); }
+        doc.getSelection?.()?.removeAllRanges();
+        this.pickAt(contents, ev.target).then((pick) => { if (pick) BookUI.readFrom(pick); }).catch(handleError);
       });
     });
     this.rendition.on('relocated', (loc) => BookUI.onRelocated(loc));
+  }
+
+  /** Parágrafos do capítulo exibido, extraídos do mesmo jeito que os trechos de leitura. */
+  viewBlocks(doc) {
+    let blocks = this.viewBlockCache.get(doc);
+    if (!blocks) {
+      blocks = extractBlocks(doc.body || doc.documentElement);
+      this.viewBlockCache.set(doc, blocks);
+    }
+    return blocks;
+  }
+
+  /** Trecho que começa no parágrafo tocado: { u, c, para, key, text } ou null. */
+  async pickAt(contents, node) {
+    const doc = contents.document;
+    const blocks = this.viewBlocks(doc);
+    let i = -1;
+    for (let el = node; el && i < 0 && el !== doc.documentElement; el = el.parentNode) {
+      i = blocks.findIndex((b) => b.el === el);
+    }
+    if (i < 0) return null;
+    const u = contents.sectionIndex;
+    const chunks = await this.getUnit(u);
+    // Confere pelo texto (o navegador pode montar o HTML exibido de forma um pouco diferente).
+    const key = textKey(blocks[i].text);
+    let c = -1;
+    chunks.forEach((ch, k) => {
+      if (ch.key !== key || (k > 0 && chunks[k - 1].para === ch.para)) return;
+      if (c < 0 || Math.abs(ch.para - i) < Math.abs(chunks[c].para - i)) c = k;
+    });
+    if (c < 0) c = chunks.findIndex((ch) => ch.para >= i); // parágrafo sem texto legível: o seguinte
+    const ch = chunks[c];
+    return ch ? { u, c, para: ch.para, n: ch.n, key: ch.key, text: ch.text } : null;
+  }
+
+  /** Destaca um parágrafo ({ u, para, key }) ou remove o destaque (null). cls: 'lv-cur' | 'lv-sel'. */
+  mark(cls, pos) {
+    this.marks[cls] = pos ? { u: pos.u, para: pos.para, key: pos.key } : null;
+    this.rendition?.getContents().forEach((contents) => this.applyMark(contents, cls));
+  }
+
+  applyMark(contents, cls) {
+    const doc = contents.document;
+    doc.querySelectorAll('.' + cls).forEach((e) => e.classList.remove(cls));
+    const pos = this.marks[cls];
+    if (!pos || pos.u !== contents.sectionIndex) return;
+    const blocks = this.viewBlocks(doc);
+    let i = pos.para;
+    if (textKey(blocks[i]?.text || '') !== pos.key) {
+      const near = blocks.map((b, k) => k).filter((k) => textKey(blocks[k].text) === pos.key);
+      if (near.length) i = near.reduce((a, k) => (Math.abs(k - pos.para) < Math.abs(a - pos.para) ? k : a));
+    }
+    blocks[i]?.el.classList.add(cls);
+  }
+
+  /** Mostra e destaca o parágrafo de um trecho. */
+  reveal(u, chunk) {
+    this.mark('lv-cur', { u, ...chunk });
+    return this.display(u, chunk.ref);
   }
 
   applyTheme() {
@@ -581,6 +677,7 @@ class EpubSource {
   }
 
   onChunk(u, c, chunk) {
+    this.mark('lv-cur', { u, ...chunk });
     if (BookUI.follow()) this.display(u, chunk.ref);
   }
 
@@ -670,7 +767,7 @@ class PdfSource {
       prev = l;
     }
     page.cleanup();
-    return makeChunks(paras.map((p) => ({ text: p.text, ref: i })));
+    return makeChunks(paras.map((p) => ({ text: p.text, ref: i })), { group: false });
   }
 
   attach(el) {
@@ -720,6 +817,8 @@ class PdfSource {
     if (BookUI.follow() && u !== this.shown) this.show(u);
   }
 
+  reveal(u) { return this.show(u); }
+
   prevView() { this.show(this.shown - 1); }
   nextView() { this.show(this.shown + 1); }
   goTo(value) { this.show(Number(value)); }
@@ -750,6 +849,7 @@ const Player = {
   cache: new Map(),
   silentUrl: makeSilentWavUrl(),
   unlocked: false,
+  stopP: 0,      // fração do trecho atual já ouvida quando a leitura foi parada
 
   /** Deve ser chamado de forma síncrona dentro de um toque do usuário (exigência do iOS/Safari). */
   unlock() {
@@ -788,6 +888,7 @@ const Player = {
     const gen = ++this.gen;
     const src = this.source;
     if (!src) return;
+    this.stopP = 0;
     this.setState('loading');
     try {
       let chunks = await src.getUnit(this.u);
@@ -930,10 +1031,28 @@ const Player = {
   },
 
   stop() {
+    const pos = this.position(); // captura a posição antes de parar o áudio
     this.gen++;
     audio.pause();
     this.setState('idle');
     $('#chunkBar').style.width = '0';
+    pos.then((p) => {
+      if (!p) return;
+      this.stopP = p.p;
+      Where.show(p);
+    }).catch(() => {});
+  },
+
+  /** Onde a leitura está: { src, u, chunk, chunks, p }, p = fração já ouvida do trecho (0–1). */
+  async position() {
+    const src = this.source;
+    if (!src) return null;
+    const live = (this.state === 'playing' || this.state === 'paused')
+      && audio.src && audio.src !== this.silentUrl && audio.duration;
+    const p = live ? Math.min(1, audio.currentTime / audio.duration) : this.stopP;
+    const { u, c } = this;
+    const chunks = await src.getUnit(u);
+    return chunks[c] ? { src, u, chunk: chunks[c], chunks, p } : null;
   },
 
   async next() {
@@ -966,6 +1085,7 @@ const Player = {
       u: this.u,
       c: this.c,
       cfi: typeof chunk?.ref === 'string' ? chunk.ref : null,
+      n: chunk?.n ?? null,
       label: src.unitLabel(this.u),
       total: src.unitCount,
       t: Date.now(),
@@ -985,10 +1105,14 @@ const Player = {
   updateInfo() {
     const src = this.source;
     if (!src) return;
-    const pos = this.chunks.length ? ` · trecho ${this.c + 1}/${this.chunks.length}` : '';
-    $('#nowLabel').textContent = src.kind === 'text'
-      ? `${src.title}${pos}`
-      : `${src.title} · ${src.unitLabel(this.u)}${pos}`;
+    const chunk = this.chunks[this.c];
+    if (src.kind === 'text') {
+      const pos = this.chunks.length ? ` · trecho ${this.c + 1}/${this.chunks.length}` : '';
+      $('#nowLabel').textContent = `${src.title}${pos}`;
+    } else {
+      const pos = chunk ? ` · ${paraLabel(chunk.n)}` : '';
+      $('#nowLabel').textContent = `${src.title} · ${src.unitLabel(this.u)}${pos}`;
+    }
     $('#nowText').textContent = this.chunks[this.c]?.text.slice(0, 160) || '';
   },
 
@@ -1375,6 +1499,7 @@ const DB = {
  * ===================================================================== */
 const BookUI = {
   source: null,
+  sel: null, // parágrafo escolhido como ponto de início: { u, c, para, key, text }
 
   init() {
     $('#fileInput').addEventListener('change', (e) => {
@@ -1393,6 +1518,8 @@ const BookUI = {
     });
     $('#btnCloseBook').addEventListener('click', () => this.close());
     $('#btnReadHere').addEventListener('click', () => { Player.unlock(); this.readHere(); });
+    $('#btnReadSel').addEventListener('click', () => { Player.unlock(); this.readFrom(this.sel); });
+    $('#btnClearSel').addEventListener('click', () => this.select(null));
     $('#btnPrevView').addEventListener('click', () => this.source?.prevView());
     $('#btnNextView').addEventListener('click', () => this.source?.nextView());
     $('#tocSelect').addEventListener('change', (e) => this.source?.goTo(e.target.value));
@@ -1412,6 +1539,7 @@ const BookUI = {
     const kind = this.kindOf(file, name);
     if (!kind) return toast('Formato não suportado. Use arquivos .epub ou .pdf.', { error: true });
     this.close();
+    this.select(null);
     showTab('book');
     $('#bookEmpty').hidden = true;
     $('#bookView').hidden = false;
@@ -1462,6 +1590,7 @@ const BookUI = {
       return;
     }
     if (Player.source === src) Player.clear();
+    this.select(null);
     src.destroy();
     this.source = null;
     $('#viewer').innerHTML = '';
@@ -1493,9 +1622,23 @@ const BookUI = {
     if (opt) sel.value = opt.value;
   },
 
+  /** Marca (ou desmarca, se for o mesmo) o parágrafo tocado como ponto de início da leitura. */
+  select(pick) {
+    const same = pick && this.sel && pick.u === this.sel.u && pick.para === this.sel.para;
+    this.sel = same ? null : pick;
+    this.source?.mark?.('lv-sel', this.sel);
+    $('#selBar').hidden = !this.sel;
+    if (this.sel) {
+      const t = this.sel.text;
+      const label = paraLabel(this.sel.n);
+      $('#selInfo').textContent = `${label[0].toUpperCase() + label.slice(1)}: ${t.length > 90 ? t.slice(0, 90) + '…' : t}`;
+    }
+  },
+
   async readHere() {
     const src = this.source;
     if (!src) return;
+    if (this.sel) return this.readFrom(this.sel);
     try {
       const { u, c } = await src.locationNow();
       Player.jumpTo(src, u, c);
@@ -1504,11 +1647,11 @@ const BookUI = {
     }
   },
 
-  async readFrom(sectionIndex, cfi) {
+  readFrom(pick) {
     const src = this.source;
-    if (!src || src.kind !== 'epub') return;
-    const chunks = await src.getUnit(sectionIndex);
-    Player.jumpTo(src, sectionIndex, findChunkByCfi(chunks, cfi));
+    if (!src || !pick) return;
+    this.select(null);
+    Player.jumpTo(src, pick.u, pick.c);
   },
 
   async renderRecent() {
@@ -1518,7 +1661,8 @@ const BookUI = {
     $('#recentList').replaceChildren(...books.map((b) => {
       const li = document.createElement('li');
       const prog = store.get(K.progress(b.id));
-      const sub = prog ? (b.kind === 'pdf' ? `Parou na página ${prog.u + 1}` : `Parou em: ${prog.label}`) : 'Não iniciado';
+      const para = prog?.n ? `, parágrafo ${prog.n}` : '';
+      const sub = prog ? (b.kind === 'pdf' ? `Parou na página ${prog.u + 1}${para}` : `Parou em: ${prog.label}${para}`) : 'Não iniciado';
       li.innerHTML = `<span class="kind">${b.kind.toUpperCase()}</span>
         <button class="r-open" data-id=""><span class="r-title"></span><span class="r-sub"></span></button>
         <button class="icon-btn small r-del" aria-label="Remover da lista" title="Remover da lista">✕</button>`;
@@ -1549,7 +1693,8 @@ function askResume(src, prog) {
   const where = src.kind === 'pdf'
     ? `na página ${prog.u + 1}`
     : `no capítulo “${src.unitLabel(prog.u)}”`;
-  $('#resumeText').textContent = `Você parou ${where}. Deseja continuar de onde parou ou recomeçar?`;
+  const para = prog.n ? `, parágrafo ${prog.n}` : '';
+  $('#resumeText').textContent = `Você parou ${where}${para}. Deseja continuar de onde parou ou recomeçar?`;
   const dlg = $('#resumeDialog');
   dlg.returnValue = '';
   dlg.showModal();
@@ -1557,6 +1702,55 @@ function askResume(src, prog) {
     dlg.addEventListener('close', () => resolve(dlg.returnValue === 'restart' ? 'restart' : 'continue'), { once: true });
   });
 }
+
+/* =====================================================================
+ * "Onde parei": ponto exato da leitura, para avançar até ele em outro leitor (ex.: Kindle)
+ * ===================================================================== */
+const Where = {
+  pos: null,
+
+  init() {
+    $('#btnCopyWhere').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(this.pos.search);
+        toast('Trecho copiado. Cole na busca do Kindle para chegar a este ponto.');
+      } catch {
+        toast('Não foi possível copiar. Selecione o trecho e copie manualmente.');
+      }
+    });
+    $('#btnShowWhere').addEventListener('click', () => {
+      $('#whereDialog').close();
+      const { src, u, chunk } = this.pos;
+      if (BookUI.source !== src) return;
+      showTab('book');
+      src.reveal(u, chunk);
+    });
+    $('.player-info').addEventListener('click', () => {
+      if (Player.source?.kind !== 'text') Player.position().then((p) => this.show(p)).catch(() => {});
+    });
+  },
+
+  show(pos) {
+    if (!pos || pos.src.kind === 'text') return;
+    const { src, u, chunk, chunks, p } = pos;
+    const first = chunks.find((ch) => ch.para === chunk.para) || chunk;
+    const sentence = sentenceAt(chunk.text, p);
+    const atStart = first === chunk && first.text.startsWith(sentence);
+    const total = chunks.reduce((m, ch) => Math.max(m, ch.n), 0);
+    // Poucas palavras funcionam melhor na busca do Kindle do que a frase inteira.
+    pos.search = sentence.replace(/^[\s"'“”‘’«»—–-]+/, '').split(/\s+/).slice(0, 8).join(' ');
+    this.pos = pos;
+
+    $('#whereLoc').textContent = `${src.unitLabel(u)} · ${chunk.n ? `parágrafo ${chunk.n} de ${total}` : 'título'}`;
+    $('#whereStart').textContent = first.text.length > 160 ? first.text.slice(0, 160) + '…' : first.text;
+    $('#whereSentenceBox').hidden = atStart;
+    $('#whereSentence').textContent = sentence;
+    $('#whereSearch').textContent = pos.search;
+    $('#btnShowWhere').hidden = BookUI.source !== src;
+    const dlg = $('#whereDialog');
+    if (!dlg.open) dlg.showModal();
+  },
+};
 
 /* =====================================================================
  * Abas, atalhos e inicialização
@@ -1590,6 +1784,7 @@ function init() {
   Settings.renderCred();
   Quick.init();
   BookUI.init();
+  Where.init();
 
   $$('.tab').forEach((t) => t.addEventListener('click', () => showTab(t.dataset.tab)));
   $$('[data-goto-help]').forEach((b) => b.addEventListener('click', () => showTab('help')));

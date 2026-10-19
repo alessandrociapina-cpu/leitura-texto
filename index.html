@@ -75,9 +75,16 @@
             <div id="bookTitle" class="book-title"></div>
             <select id="tocSelect" aria-label="Capítulo / página"></select>
           </div>
-          <button id="btnReadHere" class="btn small primary" title="Ler a partir da página visível">Ler daqui</button>
+          <button id="btnReadHere" class="btn small primary" title="Ler a partir do parágrafo escolhido ou da página visível">Ler daqui</button>
         </div>
-        <div id="viewer" class="viewer"></div>
+        <div class="viewer-wrap">
+          <div id="viewer" class="viewer"></div>
+          <div id="selBar" class="sel-bar" hidden>
+            <span id="selInfo" class="sel-info"></span>
+            <button id="btnReadSel" class="btn small primary">▶ Ler daqui</button>
+            <button id="btnClearSel" class="icon-btn small" aria-label="Cancelar escolha" title="Cancelar escolha">✕</button>
+          </div>
+        </div>
         <div class="book-nav">
           <button id="btnPrevView" class="btn ghost small">‹ Anterior</button>
           <label class="follow"><input type="checkbox" id="followToggle" checked> Acompanhar leitura</label>
@@ -165,6 +172,8 @@
         <ul>
           <li><strong>Livro:</strong> abra um ePub ou PDF. O app lê o capítulo (ou página) inteiro e continua para o próximo automaticamente.</li>
           <li><strong>Ler daqui</strong> começa a leitura a partir do que está visível na tela.</li>
+          <li><strong>Começar em um parágrafo (ePub):</strong> escolha o capítulo na lista, toque no parágrafo desejado (ele fica marcado) e toque em <strong>▶ Ler daqui</strong>. Toque duplo começa na hora.</li>
+          <li><strong>Onde parei:</strong> ao tocar em ■ (parar), o app mostra o capítulo, o número do parágrafo, o começo dele e a frase em que você parou. Use <strong>Copiar trecho</strong> e cole na busca do Kindle para chegar ao mesmo ponto. Tocar no nome do capítulo no player mostra essa informação a qualquer momento.</li>
           <li>O progresso é salvo a cada trecho. Ao reabrir o mesmo livro, o app pergunta se você quer continuar.</li>
           <li>PDFs escaneados (só imagem) não têm texto e não podem ser lidos.</li>
           <li>No Android, você pode <strong>compartilhar</strong> um texto de outro app direto para o Leitura em Voz (depois de instalar o app).</li>
@@ -271,6 +280,26 @@
       <div class="row end">
         <button value="restart" class="btn ghost">Recomeçar</button>
         <button value="continue" class="btn primary" autofocus>Continuar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- MODAL: ONDE PAREI -->
+  <dialog id="whereDialog" class="modal small">
+    <form method="dialog" class="modal-body">
+      <h2>Você parou aqui</h2>
+      <div id="whereLoc" class="where-loc"></div>
+      <div class="label">Começo do parágrafo</div>
+      <blockquote id="whereStart" class="where-quote"></blockquote>
+      <div id="whereSentenceBox">
+        <div class="label">Frase em que parou (aproximada)</div>
+        <blockquote id="whereSentence" class="where-quote"></blockquote>
+      </div>
+      <p class="muted small">Busca sugerida no Kindle: <b id="whereSearch"></b></p>
+      <div class="row end">
+        <button type="button" id="btnCopyWhere" class="btn ghost small">Copiar trecho</button>
+        <button type="button" id="btnShowWhere" class="btn ghost small">Mostrar no livro</button>
+        <button value="close" class="btn primary small">OK</button>
       </div>
     </form>
   </dialog>
