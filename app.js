@@ -28,7 +28,7 @@ const FAMILY_NAME = { neural2: 'Neural2', chirp3hd: 'Chirp 3 HD' };
 
 // Gemini (resumos). O modelo fica configurável porque o Google aposenta versões com frequência;
 // se o escolhido não existir mais (404), tenta o apelido que sempre aponta para o Flash mais recente.
-const GEMINI_MODEL = 'gemini-3.8-flash';
+const GEMINI_MODEL = 'gemini-1.5-flash';
 const GEMINI_FALLBACK = 'gemini-flash-latest';
 const geminiUrl = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 const SUMMARY_MAX_CHARS = 400_000; // capítulos muito longos são cortados antes do envio
