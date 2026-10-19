@@ -3,7 +3,7 @@
  * - Bibliotecas de CDN (epub.js, JSZip, pdf.js): cache primeiro (versões fixas, não mudam).
  * - Chamadas ao Google (OAuth / Text-to-Speech) nunca passam pelo cache.
  */
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL_CACHE = `lv-shell-${VERSION}`;
 const LIB_CACHE = 'lv-libs-v1';
 

@@ -687,7 +687,7 @@ class EpubSource {
 
   onChunk(u, c, chunk) {
     this.mark('lv-cur', { u, ...chunk });
-    if (BookUI.follow()) this.display(u, chunk.ref);
+    if (BookUI.follow() && !document.hidden) this.display(u, chunk.ref);
   }
 
   prevView() { this.rendition?.prev(); }
@@ -823,7 +823,7 @@ class PdfSource {
   async locationNow() { return { u: this.shown, c: 0 }; }
 
   onChunk(u) {
-    if (BookUI.follow() && u !== this.shown) this.show(u);
+    if (BookUI.follow() && !document.hidden && u !== this.shown) this.show(u);
   }
 
   reveal(u) { return this.show(u); }
@@ -856,6 +856,7 @@ const Player = {
   state: 'idle', // idle | loading | playing | paused
   gen: 0,        // incrementa a cada mudança de posição; cancela operações antigas
   cache: new Map(),
+  ready: new Map(), // áudios já sintetizados, acessíveis de forma síncrona (troca instantânea entre trechos)
   silentUrl: makeSilentWavUrl(),
   unlocked: false,
   stopP: 0,      // fração do trecho atual já ouvida quando a leitura foi parada
@@ -864,6 +865,7 @@ const Player = {
   unlock() {
     if (this.unlocked) return;
     this.unlocked = true;
+    audio.loop = false;
     audio.src = this.silentUrl;
     audio.play().catch(() => { this.unlocked = false; });
   },
@@ -913,37 +915,64 @@ const Player = {
       this.updateInfo();
       const item = await this.fetchAudio(this.u, this.c, chunk.text);
       if (gen !== this.gen) return;
-      audio.src = item.url;
-      audio.defaultPlaybackRate = item.clientRate;
-      audio.playbackRate = item.clientRate;
-      await audio.play();
-      if (gen !== this.gen) return;
-      this.setState('playing');
-      src.onChunk?.(this.u, this.c, chunk);
-      this.saveProgress(chunk);
-      this.updateMediaSession();
-      this.prefetch(gen);
+      await this.startItem(gen, item, chunk);
     } catch (e) {
       if (gen !== this.gen || e?.name === 'AbortError') return;
+      this.stopBridge();
       this.setState('idle');
       if (e?.name === 'NotAllowedError') toast('Toque em ▶ para iniciar o áudio.');
       else handleError(e);
     }
   },
 
+  /** Troca para o áudio do trecho e toca. Não espera nada antes do play(), então pode ser
+   *  chamado direto do evento 'ended' — exigência dos celulares para tocar com a tela bloqueada. */
+  async startItem(gen, item, chunk) {
+    audio.loop = false;
+    audio.src = item.url;
+    audio.defaultPlaybackRate = item.clientRate;
+    audio.playbackRate = item.clientRate;
+    await audio.play();
+    if (gen !== this.gen) return;
+    this.stopP = 0;
+    this.setState('playing');
+    this.updateInfo();
+    this.source.onChunk?.(this.u, this.c, chunk);
+    this.saveProgress(chunk);
+    this.updateMediaSession();
+    this.prefetch(gen);
+  },
+
+  /** Toca silêncio em loop enquanto o próximo trecho é preparado. Sem isso, com a tela bloqueada,
+   *  o celular encerra a sessão de áudio no intervalo e bloqueia o play() seguinte. */
+  bridge() {
+    audio.loop = true;
+    audio.src = this.silentUrl;
+    audio.play().catch(() => {});
+  },
+
+  stopBridge() {
+    if (audio.src !== this.silentUrl) return;
+    audio.pause();
+    audio.loop = false;
+  },
+
+  audioKey(u, c) { return `${Settings.signature()}|${u}:${c}`; },
+
   fetchAudio(u, c, text) {
-    const key = `${Settings.signature()}|${u}:${c}`;
+    const key = this.audioKey(u, c);
     let p = this.cache.get(key);
     if (p) {
       this.cache.delete(key); // move para o fim (LRU)
     } else {
       p = TTS.synthesize(text).then((r) => ({ url: URL.createObjectURL(r.blob), clientRate: r.clientRate }));
-      p.catch(() => this.cache.delete(key));
+      p.then((r) => { if (this.cache.get(key) === p) this.ready.set(key, r); }, () => this.cache.delete(key));
     }
     this.cache.set(key, p);
     while (this.cache.size > AUDIO_CACHE) {
       const [oldKey, oldP] = this.cache.entries().next().value;
       this.cache.delete(oldKey);
+      this.ready.delete(oldKey);
       oldP.then((r) => { if (audio.src !== r.url) URL.revokeObjectURL(r.url); }).catch(() => {});
     }
     return p;
@@ -952,6 +981,7 @@ const Player = {
   clearCache() {
     for (const p of this.cache.values()) p.then((r) => URL.revokeObjectURL(r.url)).catch(() => {});
     this.cache.clear();
+    this.ready.clear();
   },
 
   async prefetch(gen) {
@@ -987,8 +1017,27 @@ const Player = {
     return null;
   },
 
-  async onEnded() {
+  onEnded() {
     if (Sleep.expired()) { Sleep.fire(); this.setState('idle'); this.advanceSilently(); return; }
+    // Caminho rápido: o próximo trecho do mesmo capítulo já foi sintetizado → toca na hora, sem intervalo.
+    const nc = this.c + 1;
+    const item = nc < this.chunks.length ? this.ready.get(this.audioKey(this.u, nc)) : null;
+    if (item) {
+      const gen = ++this.gen;
+      this.c = nc;
+      this.startItem(gen, item, this.chunks[nc]).catch((e) => {
+        if (gen !== this.gen || e?.name === 'AbortError') return;
+        this.bridge();
+        this.playCurrent();
+      });
+      return;
+    }
+    // Caminho lento (trecho ainda sendo sintetizado ou troca de capítulo): silêncio até ficar pronto.
+    this.bridge();
+    this.advance();
+  },
+
+  async advance() {
     const gen = this.gen;
     const n = await this.nextCursor(this.u, this.c).catch(() => null);
     if (gen !== this.gen) return;
@@ -996,6 +1045,7 @@ const Player = {
     const unitChanged = n[0] !== this.u;
     [this.u, this.c] = n;
     if (unitChanged && Sleep.mode() === 'chapter') {
+      this.stopBridge();
       Sleep.fire();
       this.setState('idle');
       this.source.getUnit(this.u).then((ch) => { this.chunks = ch; this.updateInfo(); this.saveProgress(ch[this.c]); });
@@ -1011,6 +1061,7 @@ const Player = {
   },
 
   finish() {
+    this.stopBridge();
     this.setState('idle');
     toast(this.source?.kind === 'text' ? 'Fim do texto.' : 'Fim do livro. 🎉');
     this.u = 0; this.c = 0;
@@ -1108,7 +1159,8 @@ const Player = {
     $('#icoPause').hidden = !playing;
     $('#spinner').hidden = s !== 'loading';
     $('#btnPlay').setAttribute('aria-label', playing ? 'Pausar' : 'Reproduzir');
-    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = s === 'playing' ? 'playing' : (s === 'paused' ? 'paused' : 'none');
+    // 'loading' conta como tocando: se a sessão de mídia virar 'none' entre trechos, o celular some com os controles.
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : (s === 'paused' ? 'paused' : 'none');
   },
 
   updateInfo() {
@@ -2046,6 +2098,14 @@ function init() {
   BookUI.init();
   Where.init();
   Summary.init();
+
+  // Ao voltar para o app, leva o livro até o trecho que está tocando (em segundo plano a tela não é movida).
+  document.addEventListener('visibilitychange', () => {
+    const chunk = Player.chunks[Player.c];
+    if (!document.hidden && chunk && BookUI.source && Player.source === BookUI.source && Player.state === 'playing') {
+      BookUI.source.onChunk(Player.u, Player.c, chunk);
+    }
+  });
 
   $$('.tab').forEach((t) => t.addEventListener('click', () => showTab(t.dataset.tab)));
   $$('[data-goto-help]').forEach((b) => b.addEventListener('click', () => showTab('help')));
