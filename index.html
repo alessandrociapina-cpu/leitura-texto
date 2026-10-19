@@ -84,6 +84,10 @@
             <button id="btnReadSel" class="btn small primary">▶ Ler daqui</button>
             <button id="btnClearSel" class="icon-btn small" aria-label="Cancelar escolha" title="Cancelar escolha">✕</button>
           </div>
+          <button id="btnSummary" class="summary-fab" title="Gerar um resumo com o Gemini">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4L12 3Z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></svg>
+            <span id="summaryBtnLabel">Resumir capítulo</span>
+          </button>
         </div>
         <div class="book-nav">
           <button id="btnPrevView" class="btn ghost small">‹ Anterior</button>
@@ -164,6 +168,21 @@
           <li>A chave fica salva no armazenamento local deste navegador (<code>localStorage</code>) e só é enviada ao Google, nunca a outro servidor.</li>
           <li>Qualquer pessoa com acesso a este aparelho/navegador poderia extraí-la. Não use em computadores compartilhados.</li>
           <li>Use um projeto exclusivo para este app e a conta de serviço sem papéis. Se a chave vazar, apague-a no console (aba <em>Chaves</em>) e gere outra.</li>
+        </ul>
+      </details>
+
+      <details>
+        <summary>✨ Resumo de capítulos com Gemini (opcional)</summary>
+        <p>O botão <strong>Resumir capítulo</strong> (no ePub) ou <strong>Resumir página</strong> (no PDF) envia o texto do capítulo exibido para o Gemini e mostra um resumo com os eventos principais e o desenvolvimento dos personagens. O resumo fica guardado neste aparelho, então abrir de novo não gasta cota.</p>
+        <ol>
+          <li>Acesse <strong>aistudio.google.com/apikey</strong> com sua conta Google.</li>
+          <li>Clique em <strong>Criar chave de API</strong> e escolha um projeto (pode ser o mesmo da Text-to-Speech).</li>
+          <li>Copie a chave (começa com <code>AIza</code>) e cole em <strong>Configurações → Resumo com Gemini</strong>. Toque em <strong>Salvar</strong>.</li>
+        </ol>
+        <ul>
+          <li><strong>Custo:</strong> o nível gratuito do Gemini tem limites de pedidos por minuto e por dia. Se aparecer "cota excedida", espere um pouco ou tente no dia seguinte.</li>
+          <li><strong>Privacidade:</strong> no nível gratuito, o Google pode usar o conteúdo enviado para melhorar seus produtos. Não resuma textos confidenciais.</li>
+          <li><strong>Segurança:</strong> no console do Google Cloud (<em>APIs e serviços → Credenciais</em>), restrinja a chave à <em>Generative Language API</em> e aos sites <code>alessandrociapina-cpu.github.io/*</code> e <code>localhost</code>.</li>
         </ul>
       </details>
 
@@ -256,6 +275,20 @@
       </fieldset>
 
       <fieldset>
+        <legend>Resumo com Gemini (opcional)</legend>
+        <div id="geminiStatus" class="cred-status"></div>
+        <label class="label" for="geminiKey">Gemini API Key</label>
+        <input type="password" id="geminiKey" placeholder="AIza…" autocomplete="off" spellcheck="false">
+        <label class="label" for="geminiModel">Modelo</label>
+        <input type="text" id="geminiModel" placeholder="gemini-3.8-flash" autocomplete="off" spellcheck="false">
+        <div class="row">
+          <button type="button" id="btnSaveGemini" class="btn primary">Salvar</button>
+          <button type="button" id="btnDeleteGemini" class="btn danger ghost">Remover</button>
+        </div>
+        <p class="muted small">Crie a chave em aistudio.google.com/apikey (veja Ajuda). Deixe o modelo em branco para usar o padrão.</p>
+      </fieldset>
+
+      <fieldset>
         <legend>Uso estimado neste mês</legend>
         <div id="usageBox" class="usage"></div>
         <button type="button" id="btnResetUsage" class="link-btn small">Zerar contador</button>
@@ -280,6 +313,30 @@
       <div class="row end">
         <button value="restart" class="btn ghost">Recomeçar</button>
         <button value="continue" class="btn primary" autofocus>Continuar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- MODAL: RESUMO (GEMINI) -->
+  <dialog id="summaryDialog" class="modal">
+    <form method="dialog" class="modal-body">
+      <div class="modal-head">
+        <h2 id="summaryTitle">Resumo do capítulo</h2>
+        <button value="close" class="icon-btn" aria-label="Fechar">✕</button>
+      </div>
+      <div id="summaryMeta" class="muted small"></div>
+      <div id="summaryLoading" class="skeleton" hidden aria-live="polite">
+        <div class="sk-line"></div><div class="sk-line"></div><div class="sk-line short"></div>
+        <div class="sk-line"></div><div class="sk-line short"></div>
+        <p class="muted small"><span class="spinner-inline"></span> Gerando resumo com o Gemini…</p>
+      </div>
+      <div id="summaryError" class="note warn" hidden></div>
+      <article id="summaryBody" class="summary-body" hidden></article>
+      <div class="row end">
+        <button type="button" id="btnSummaryKey" class="btn ghost small" hidden>Configurar chave</button>
+        <button type="button" id="btnSummaryCopy" class="btn ghost small" hidden>Copiar</button>
+        <button type="button" id="btnSummaryRedo" class="btn ghost small" hidden>Gerar de novo</button>
+        <button value="close" class="btn primary small">Fechar</button>
       </div>
     </form>
   </dialog>

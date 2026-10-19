@@ -26,6 +26,13 @@ const AUDIO_CACHE = 40;  // trechos de áudio mantidos em memória
 
 const FAMILY_NAME = { neural2: 'Neural2', chirp3hd: 'Chirp 3 HD' };
 
+// Gemini (resumos). O modelo fica configurável porque o Google aposenta versões com frequência;
+// se o escolhido não existir mais (404), tenta o apelido que sempre aponta para o Flash mais recente.
+const GEMINI_MODEL = 'gemini-3.8-flash';
+const GEMINI_FALLBACK = 'gemini-flash-latest';
+const geminiUrl = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+const SUMMARY_MAX_CHARS = 400_000; // capítulos muito longos são cortados antes do envio
+
 const FALLBACK_VOICES = {
   neural2: [
     ['pt-BR-Neural2-B', 'MALE'], ['pt-BR-Neural2-A', 'FEMALE'], ['pt-BR-Neural2-C', 'FEMALE'],
@@ -49,6 +56,8 @@ const K = {
   draft: 'lv.draft',
   tab: 'lv.tab',
   progress: (id) => 'lv.progress.' + id,
+  gemini: 'lv.gemini',
+  summary: (id, u) => `lv.summary.${id}.${u}`,
 };
 
 /* =====================================================================
@@ -1212,6 +1221,7 @@ const Settings = {
 
   open() {
     this.renderCred();
+    this.renderGemini();
     this.renderUsage();
     $('#settingsDialog').showModal();
   },
@@ -1261,6 +1271,16 @@ const Settings = {
     $('#pitchRange').addEventListener('change', () => this.save());
     $('#btnPreview').addEventListener('click', () => this.preview());
     $('#btnResetUsage').addEventListener('click', () => { Usage.reset(); this.renderUsage(); });
+    $('#btnSaveGemini').addEventListener('click', () => this.saveGemini());
+    $('#btnDeleteGemini').addEventListener('click', () => {
+      if (!Gemini.has() || !confirm('Remover a Gemini API Key deste aparelho?')) return;
+      store.del(K.gemini);
+      this.renderGemini();
+      toast('Chave do Gemini removida deste aparelho.');
+    });
+    ['#geminiKey', '#geminiModel'].forEach((sel) => $(sel).addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); this.saveGemini(); } // não deixa o Enter fechar o modal
+    }));
     $$('input[name="theme"]').forEach((r) => r.addEventListener('change', () => {
       d.theme = r.value;
       this.save();
@@ -1275,6 +1295,27 @@ const Settings = {
     const chirp = d.family === 'chirp3hd';
     $('#pitchRange').disabled = chirp;
     $('#pitchNote').hidden = !chirp;
+  },
+
+  saveGemini() {
+    const key = $('#geminiKey').value.trim();
+    const model = $('#geminiModel').value.trim();
+    const cur = store.get(K.gemini) || {};
+    if (!key && !cur.key) return toast('Cole a Gemini API Key primeiro.');
+    if (key && !/^[\w-]{30,}$/.test(key)) return toast('Essa chave não parece uma Gemini API Key (normalmente começa com "AIza").', { error: true });
+    store.set(K.gemini, { key: key || cur.key, model });
+    $('#geminiKey').value = '';
+    this.renderGemini();
+    toast('Configuração do Gemini salva.');
+  },
+
+  renderGemini() {
+    const g = store.get(K.gemini);
+    const el = $('#geminiStatus');
+    el.className = 'cred-status' + (g?.key ? ' ok' : '');
+    el.textContent = g?.key ? `✓ Chave salva (termina em …${g.key.slice(-4)})` : 'Nenhuma chave do Gemini salva.';
+    $('#geminiModel').value = g?.model || '';
+    $('#btnDeleteGemini').disabled = !g?.key;
   },
 
   renderCred() {
@@ -1552,6 +1593,7 @@ const BookUI = {
       this.source = src;
       $('#bookTitle').textContent = src.title;
       this.fillToc();
+      $('#summaryBtnLabel').textContent = kind === 'pdf' ? 'Resumir página' : 'Resumir capítulo';
       src.attach($('#viewer'));
 
       DB.save({ id: src.id, kind, title: src.title, name, size: file.size, blob: file, opened: Date.now() })
@@ -1753,6 +1795,200 @@ const Where = {
 };
 
 /* =====================================================================
+ * Resumo de capítulo com a API Gemini (REST, direto do navegador)
+ * ===================================================================== */
+function describeGeminiError(status, data, model) {
+  const err = data?.error || {};
+  const msg = err.message || '';
+  const all = msg + ' ' + JSON.stringify(err.details || '');
+  if (/API_KEY_INVALID|API key not valid|API key expired/i.test(all)) return 'A Gemini API Key é inválida ou expirou. Confira em Configurações.';
+  if (status === 429) return 'Cota do Gemini excedida (limite por minuto ou por dia do nível gratuito). Aguarde um pouco e tente de novo.';
+  if (status === 403) return 'O Google negou acesso ao Gemini: a chave pode estar restrita a outros sites/APIs ou a API está desativada. ' + msg;
+  if (status === 404) return `Modelo "${model}" não encontrado. Ajuste o modelo em Configurações.`;
+  if (status === 400 && /location|region|country/i.test(msg)) return 'O Gemini não está disponível na sua região para esta chave.';
+  if (status >= 500) return 'O Gemini está indisponível ou sobrecarregado agora. Tente de novo em instantes.';
+  return `Erro ${status} do Gemini${msg ? ': ' + msg : ''}`;
+}
+
+const Gemini = {
+  has() { return !!store.get(K.gemini)?.key; },
+
+  async summarize(prompt) {
+    const cfg = store.get(K.gemini) || {};
+    if (!cfg.key) throw new AppError('Configure sua Gemini API Key em Configurações para gerar resumos.', { code: 'NO_GEMINI' });
+    const models = [...new Set([cfg.model || GEMINI_MODEL, GEMINI_FALLBACK])];
+    let lastErr;
+    for (const model of models) {
+      try {
+        return { text: await this.generate(model, cfg.key, prompt), model };
+      } catch (e) {
+        lastErr = e;
+        if (e.status !== 404) throw e;
+      }
+    }
+    throw lastErr;
+  },
+
+  async generate(model, key, prompt) {
+    let res;
+    try {
+      // A chave vai no cabeçalho x-goog-api-key (equivale ao ?key=, mas não fica em URLs e históricos).
+      res = await fetch(geminiUrl(model), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.4 },
+        }),
+      });
+    } catch {
+      throw new AppError('Sem conexão com o Gemini. Verifique a internet.', { code: 'NET' });
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new AppError(describeGeminiError(res.status, data, model), { code: 'GEMINI', status: res.status });
+    const blocked = data.promptFeedback?.blockReason;
+    if (blocked) throw new AppError(`O Gemini recusou este texto (${blocked}).`);
+    const cand = data.candidates?.[0];
+    const text = (cand?.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || '').join('').trim();
+    if (!text) {
+      throw new AppError(cand?.finishReason === 'SAFETY'
+        ? 'O Gemini bloqueou o resumo pelos filtros de segurança.'
+        : 'O Gemini não retornou texto. Tente de novo.');
+    }
+    return text;
+  },
+};
+
+/** Markdown simples (títulos, listas, negrito, itálico) → HTML seguro (tudo é escapado antes). */
+function renderMarkdown(md) {
+  const esc = (t) => t.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const inline = (t) => esc(t)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*\w])[*_](?!\s)(.+?)[*_](?![*\w])/g, '$1<em>$2</em>');
+  const out = [];
+  let items = null;
+  const closeList = () => { if (items) { out.push(`<ul>${items.join('')}</ul>`); items = null; } };
+  for (const raw of md.split('\n')) {
+    const line = raw.trimEnd();
+    const li = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
+    if (li) { (items ||= []).push(`<li>${inline(li[1])}</li>`); continue; }
+    closeList();
+    const h = line.match(/^#{1,6}\s+(.*)$/);
+    if (h) out.push(`<h3>${inline(h[1])}</h3>`);
+    else if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+  }
+  closeList();
+  return out.join('');
+}
+
+const Summary = {
+  ctx: null,
+  gen: 0,
+
+  init() {
+    $('#btnSummary').addEventListener('click', () => this.open());
+    $('#btnSummaryRedo').addEventListener('click', () => this.open(true));
+    $('#btnSummaryCopy').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(this.ctx?.text || '');
+        toast('Resumo copiado.');
+      } catch {
+        toast('Não foi possível copiar. Selecione o texto e copie manualmente.');
+      }
+    });
+    $('#btnSummaryKey').addEventListener('click', () => {
+      $('#summaryDialog').close();
+      Settings.open();
+      $('#geminiKey').focus();
+    });
+  },
+
+  /** Texto do capítulo/página: trechos do mesmo parágrafo juntos, parágrafos separados por linha em branco. */
+  async unitText(src, u) {
+    const chunks = await src.getUnit(u);
+    let text = '';
+    chunks.forEach((ch, i) => {
+      const samePara = i > 0 && ch.para != null && ch.para === chunks[i - 1].para;
+      text += (i === 0 ? '' : samePara ? ' ' : '\n\n') + ch.text;
+    });
+    return text;
+  },
+
+  buildPrompt(src, label, text) {
+    const what = src.kind === 'pdf'
+      ? 'da seguinte página de um livro ou documento, destacando os pontos e eventos principais e, se houver, o desenvolvimento dos personagens'
+      : 'do seguinte capítulo de livro, destacando os eventos principais e o desenvolvimento dos personagens';
+    return `Faça um resumo conciso e detalhado ${what}.
+Responda em português do Brasil, em Markdown simples: parágrafos curtos e, se ajudar, uma lista de tópicos. Não invente nada que não esteja no texto.
+
+Livro: ${src.title}
+${src.kind === 'pdf' ? label : 'Capítulo: ' + label}
+
+${text}`;
+  },
+
+  async open(force = false) {
+    const src = BookUI.source;
+    if (!src) return;
+    const gen = ++this.gen;
+    let u = 0;
+    try { ({ u } = await src.locationNow()); } catch { /* usa o início */ }
+    const label = src.unitLabel(u);
+    this.ctx = { src, u, text: '' };
+
+    $('#summaryTitle').textContent = src.kind === 'pdf' ? 'Resumo da página' : 'Resumo do capítulo';
+    $('#summaryMeta').textContent = `${src.title} · ${label}`;
+    const dlg = $('#summaryDialog');
+    if (!dlg.open) dlg.showModal();
+
+    const cacheKey = K.summary(src.id, u);
+    const cached = !force && store.get(cacheKey);
+    if (cached?.text) return this.show(cached);
+    if (!Gemini.has()) {
+      return this.fail(new AppError('Para gerar resumos, cole sua Gemini API Key em Configurações. Veja na Ajuda como criar uma de graça.', { code: 'NO_GEMINI' }));
+    }
+
+    this.setView('loading');
+    try {
+      let text = await this.unitText(src, u);
+      if (!text.trim()) throw new AppError(src.kind === 'pdf' ? 'Esta página não tem texto para resumir.' : 'Este capítulo não tem texto para resumir.');
+      if (text.length > SUMMARY_MAX_CHARS) text = text.slice(0, SUMMARY_MAX_CHARS) + '\n\n[texto cortado por ser muito longo]';
+      const r = await Gemini.summarize(this.buildPrompt(src, label, text));
+      const rec = { text: r.text, model: r.model, t: Date.now() };
+      store.set(cacheKey, rec); // guarda mesmo se o modal já foi fechado
+      if (gen === this.gen && this.ctx?.src === src) this.show(rec);
+    } catch (e) {
+      if (gen === this.gen) this.fail(e);
+    }
+  },
+
+  setView(view) {
+    $('#summaryLoading').hidden = view !== 'loading';
+    $('#summaryError').hidden = view !== 'error';
+    $('#summaryBody').hidden = view !== 'done';
+    $('#btnSummaryCopy').hidden = view !== 'done';
+    $('#btnSummaryRedo').hidden = view === 'loading';
+    $('#btnSummaryKey').hidden = true;
+  },
+
+  show(rec) {
+    this.ctx.text = rec.text;
+    $('#summaryBody').innerHTML = renderMarkdown(rec.text)
+      + `<p class="muted small">Gerado por ${rec.model.replace(/[^\w.-]/g, '')} em ${new Date(rec.t).toLocaleDateString('pt-BR')}. Pode conter imprecisões.</p>`;
+    this.setView('done');
+    $('#summaryBody').scrollTop = 0;
+  },
+
+  fail(e) {
+    console.warn(e);
+    $('#summaryError').textContent = e?.message || String(e);
+    this.setView('error');
+    $('#btnSummaryKey').hidden = !(e?.code === 'NO_GEMINI' || /API Key/i.test(e?.message || ''));
+    $('#btnSummaryRedo').hidden = e?.code === 'NO_GEMINI';
+  },
+};
+
+/* =====================================================================
  * Abas, atalhos e inicialização
  * ===================================================================== */
 function showTab(name) {
@@ -1785,6 +2021,7 @@ function init() {
   Quick.init();
   BookUI.init();
   Where.init();
+  Summary.init();
 
   $$('.tab').forEach((t) => t.addEventListener('click', () => showTab(t.dataset.tab)));
   $$('[data-goto-help]').forEach((b) => b.addEventListener('click', () => showTab('help')));

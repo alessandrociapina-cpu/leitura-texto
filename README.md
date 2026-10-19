@@ -13,8 +13,9 @@ PWA para ouvir textos, livros ePub e PDFs com as vozes **Neural2** e **Chirp 3 H
   - Use *Ler daqui* para começar pela página visível. No ePub, toque em um parágrafo para marcá-lo como ponto de início e depois em *▶ Ler daqui*; um toque duplo começa na hora. O parágrafo em leitura fica destacado.
   - Ao parar (■), o app mostra **onde você parou**: capítulo, número do parágrafo, começo do parágrafo e a frase aproximada, com um botão para copiar o trecho e buscá-lo no Kindle. Tocar nas informações do player mostra isso a qualquer momento.
   - Os livros abertos recentemente ficam guardados no IndexedDB para reabrir com um toque.
+- **Resumo com Gemini (opcional):** no livro, o botão *Resumir capítulo* (ou *Resumir página*, no PDF) envia o texto do capítulo exibido para a API Gemini e mostra o resumo em um modal. O resumo fica guardado no aparelho, então reabrir não gasta cota. A chave do Gemini é informada em *Configurações* e salva no `localStorage`.
 - **Player fixo:** reproduzir/pausar, voltar e avançar trecho, parar, timer de sono e controles na tela de bloqueio (Media Session).
-- **Configurações:** chave da Service Account (upload ou colar), tipo de voz, voz, velocidade, tom, contador de uso do mês e tema.
+- **Configurações:** chave da Service Account (upload ou colar), Gemini API Key e modelo, tipo de voz, voz, velocidade, tom, contador de uso do mês e tema.
 - **Ajuda:** explica a cobrança e mostra o passo a passo para configurar o Google Cloud.
 - **PWA:** pode ser instalado e recebe textos pelo menu *Compartilhar* do Android (Web Share Target).
 
