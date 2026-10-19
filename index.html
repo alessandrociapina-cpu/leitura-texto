@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Leitura em Voz</title>
+  <meta name="description" content="Leitor de textos, ePub e PDF em voz alta com Google Cloud Text-to-Speech.">
+  <meta name="theme-color" content="#111318">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Leitura">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icons/icon.svg" alt="" width="28" height="28">
+      <span>Leitura em Voz</span>
+    </div>
+    <button id="btnSettings" class="icon-btn" aria-label="Configurações" title="Configurações">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+    </button>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" role="tab" data-tab="text" aria-selected="true">Texto</button>
+    <button class="tab" role="tab" data-tab="book" aria-selected="false">Livro</button>
+    <button class="tab" role="tab" data-tab="help" aria-selected="false">Ajuda</button>
+  </nav>
+
+  <div id="credBanner" class="banner" hidden>
+    Nenhuma credencial configurada.
+    <button class="link-btn" data-open-settings>Configurar chave</button>
+    ·
+    <button class="link-btn" data-goto-help>Como obter?</button>
+  </div>
+
+  <main>
+    <!-- ABA: TEXTO -->
+    <section id="tab-text" class="panel active" role="tabpanel">
+      <label for="quickText" class="label">Cole o texto que deseja ouvir</label>
+      <textarea id="quickText" placeholder="Cole aqui um artigo, e-mail, capítulo…" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="btnPaste" class="btn ghost">Colar</button>
+        <button id="btnClearText" class="btn ghost">Limpar</button>
+        <span id="textCount" class="muted small"></span>
+        <button id="btnListen" class="btn primary grow">Ouvir</button>
+      </div>
+      <div id="quickPreview" class="quick-preview" hidden></div>
+    </section>
+
+    <!-- ABA: LIVRO -->
+    <section id="tab-book" class="panel" role="tabpanel">
+      <div id="bookEmpty">
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="fileInput" accept=".epub,.pdf,application/epub+zip,application/pdf" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2Zm0 0A1.5 1.5 0 0 0 5.5 21H18"/><path d="M12 7v6m-3-3h6"/></svg>
+          <strong>Abrir ePub ou PDF</strong>
+          <span class="muted small">Toque para escolher ou arraste o arquivo aqui</span>
+        </label>
+        <h3 class="section-title" id="recentTitle" hidden>Recentes</h3>
+        <ul id="recentList" class="recent-list"></ul>
+      </div>
+
+      <div id="bookView" hidden>
+        <div class="book-bar">
+          <button id="btnCloseBook" class="icon-btn" aria-label="Fechar livro" title="Fechar livro">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+          <div class="book-meta">
+            <div id="bookTitle" class="book-title"></div>
+            <select id="tocSelect" aria-label="Capítulo / página"></select>
+          </div>
+          <button id="btnReadHere" class="btn small primary" title="Ler a partir da página visível">Ler daqui</button>
+        </div>
+        <div id="viewer" class="viewer"></div>
+        <div class="book-nav">
+          <button id="btnPrevView" class="btn ghost small">‹ Anterior</button>
+          <label class="follow"><input type="checkbox" id="followToggle" checked> Acompanhar leitura</label>
+          <button id="btnNextView" class="btn ghost small">Próximo ›</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ABA: AJUDA -->
+    <section id="tab-help" class="panel help" role="tabpanel">
+      <h2>Como funciona</h2>
+      <p>Este app transforma texto em fala usando a <strong>API Google Cloud Text-to-Speech</strong>, chamada diretamente do seu navegador com a <strong>sua</strong> conta Google Cloud. Não existe servidor intermediário: sua chave fica salva apenas neste aparelho.</p>
+
+      <details open>
+        <summary>💰 Cobrança e cota gratuita</summary>
+        <ul>
+          <li>O Google cobra por <strong>caractere enviado</strong> (espaços e pontuação contam).</li>
+          <li>As vozes <strong>Neural2</strong> têm <strong>1 milhão de caracteres grátis por mês</strong>. Acima disso, cerca de US$ 16 por milhão.</li>
+          <li>As vozes <strong>Chirp 3 HD</strong> também têm <strong>1 milhão de caracteres grátis por mês</strong>, cota separada da Neural2. Acima disso, cerca de US$ 30 por milhão.</li>
+          <li>Para ter noção: um romance de 300 páginas tem algo entre 500 mil e 700 mil caracteres. Ou seja, cerca de 1 a 2 livros por mês por tipo de voz, sem custo.</li>
+          <li>O app mostra em <em>Configurações</em> uma <strong>estimativa</strong> do que você já usou no mês (contada só neste aparelho). O valor oficial está no console do Google Cloud, em <em>Faturamento → Relatórios</em>.</li>
+          <li>Valores e cotas podem mudar: confira sempre a página oficial de preços do Cloud Text-to-Speech.</li>
+        </ul>
+      </details>
+
+      <details>
+        <summary>1. Criar o projeto no Google Cloud</summary>
+        <ol>
+          <li>Acesse <strong>console.cloud.google.com</strong> e entre com sua conta Google.</li>
+          <li>No topo, clique no seletor de projetos → <strong>Novo projeto</strong>. Dê um nome (ex.: <code>leitura-voz</code>) e clique em <strong>Criar</strong>.</li>
+          <li>Selecione o projeto recém-criado no seletor.</li>
+          <li>Vá em <strong>Faturamento</strong> e vincule uma conta de faturamento (cartão). O Google exige isso mesmo para usar a cota gratuita.</li>
+        </ol>
+      </details>
+
+      <details>
+        <summary>2. Ativar a Text-to-Speech API</summary>
+        <ol>
+          <li>No menu, abra <strong>APIs e serviços → Biblioteca</strong>.</li>
+          <li>Pesquise por <strong>Cloud Text-to-Speech API</strong>.</li>
+          <li>Clique em <strong>Ativar</strong>.</li>
+        </ol>
+      </details>
+
+      <details>
+        <summary>3. Orçamento de R$ 0,00 e limites de segurança</summary>
+        <ol>
+          <li>Abra <strong>Faturamento → Orçamentos e alertas → Criar orçamento</strong>.</li>
+          <li>Escopo: selecione o seu projeto. Em <em>Valor</em>, escolha <strong>Valor especificado</strong> e digite <strong>0</strong> (ou R$ 1,00 se o console não aceitar zero).</li>
+          <li>Em <em>Ações</em>, mantenha os alertas em 50%, 90% e 100% e marque <strong>Enviar alertas por e-mail</strong>.</li>
+          <li>Clique em <strong>Concluir</strong>.</li>
+        </ol>
+        <p class="note warn"><strong>Importante:</strong> o orçamento do Google <strong>só envia alertas, ele não bloqueia a cobrança</strong>. Para ter um teto de verdade, limite também a cota da API:</p>
+        <ol>
+          <li>Em <strong>APIs e serviços → Cloud Text-to-Speech API → Cotas e limites do sistema</strong>.</li>
+          <li>Encontre a cota de <strong>caracteres/requisições por minuto</strong> e reduza para um valor modesto (ex.: 100 requisições por minuto).</li>
+          <li>Se receber um alerta de orçamento, você pode <strong>desativar a API</strong> ou desvincular o faturamento do projeto na hora.</li>
+        </ol>
+      </details>
+
+      <details>
+        <summary>4. Gerar a chave JSON (Service Account)</summary>
+        <ol>
+          <li>Abra <strong>IAM e administrador → Contas de serviço → Criar conta de serviço</strong>.</li>
+          <li>Nome: <code>leitor-tts</code>. Clique em <strong>Criar e continuar</strong>.</li>
+          <li>Papéis: a Text-to-Speech <strong>não exige nenhum papel</strong>. Pule a etapa (menos permissões = mais segurança) e clique em <strong>Concluir</strong>.</li>
+          <li>Na lista, clique na conta criada → aba <strong>Chaves</strong> → <strong>Adicionar chave → Criar nova chave → JSON</strong>.</li>
+          <li>Um arquivo <code>.json</code> será baixado. Guarde-o com cuidado: ele é a "senha" do seu projeto.</li>
+          <li>Neste app, abra <strong>Configurações</strong> (ícone de engrenagem), envie o arquivo ou cole o conteúdo e toque em <strong>Salvar</strong>. Depois use <strong>Testar conexão</strong>.</li>
+        </ol>
+        <p class="note">Se aparecer "A criação de chaves de conta de serviço está desativada", sua conta pertence a uma organização com a política <code>iam.disableServiceAccountKeyCreation</code>. Contas pessoais (@gmail.com) normalmente não têm essa restrição.</p>
+      </details>
+
+      <details>
+        <summary>🔒 Segurança da chave</summary>
+        <ul>
+          <li>A chave fica salva no armazenamento local deste navegador (<code>localStorage</code>) e só é enviada ao Google, nunca a outro servidor.</li>
+          <li>Qualquer pessoa com acesso a este aparelho/navegador poderia extraí-la. Não use em computadores compartilhados.</li>
+          <li>Use um projeto exclusivo para este app e a conta de serviço sem papéis. Se a chave vazar, apague-a no console (aba <em>Chaves</em>) e gere outra.</li>
+        </ul>
+      </details>
+
+      <details>
+        <summary>📖 Dicas de uso</summary>
+        <ul>
+          <li><strong>Livro:</strong> abra um ePub ou PDF. O app lê o capítulo (ou página) inteiro e continua para o próximo automaticamente.</li>
+          <li><strong>Ler daqui</strong> começa a leitura a partir do que está visível na tela.</li>
+          <li>O progresso é salvo a cada trecho. Ao reabrir o mesmo livro, o app pergunta se você quer continuar.</li>
+          <li>PDFs escaneados (só imagem) não têm texto e não podem ser lidos.</li>
+          <li>No Android, você pode <strong>compartilhar</strong> um texto de outro app direto para o Leitura em Voz (depois de instalar o app).</li>
+          <li>Instale como app: no Chrome, menu ⋮ → <em>Instalar app</em>; no iPhone, Safari → Compartilhar → <em>Adicionar à Tela de Início</em>.</li>
+        </ul>
+      </details>
+    </section>
+  </main>
+
+  <!-- PLAYER FIXO -->
+  <footer class="player" id="player">
+    <div class="player-progress"><div id="chunkBar"></div></div>
+    <div class="player-info">
+      <div id="nowLabel" class="now-label">Nada tocando</div>
+      <div id="nowText" class="now-text muted"></div>
+    </div>
+    <div class="player-controls">
+      <button id="btnSleep" class="icon-btn small" aria-label="Timer de sono" title="Timer de sono">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+        <span id="sleepLabel" class="badge" hidden></span>
+      </button>
+      <button id="btnPrev" class="icon-btn" aria-label="Retroceder" title="Retroceder trecho">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 20 9 12l10-8v16ZM5 19V5"/></svg>
+      </button>
+      <button id="btnPlay" class="play-btn" aria-label="Reproduzir">
+        <svg id="icoPlay" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16l13-8L7 4Z"/></svg>
+        <svg id="icoPause" viewBox="0 0 24 24" aria-hidden="true" hidden><path d="M7 4h4v16H7zM13 4h4v16h-4z"/></svg>
+        <span id="spinner" class="spinner" hidden></span>
+      </button>
+      <button id="btnNext" class="icon-btn" aria-label="Avançar" title="Avançar trecho">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 4 10 8-10 8V4Zm14 1v14"/></svg>
+      </button>
+      <button id="btnStop" class="icon-btn small" aria-label="Parar" title="Parar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
+      </button>
+    </div>
+  </footer>
+
+  <!-- MODAL: CONFIGURAÇÕES -->
+  <dialog id="settingsDialog" class="modal">
+    <form method="dialog" class="modal-body" id="settingsForm">
+      <div class="modal-head">
+        <h2>Configurações</h2>
+        <button value="cancel" class="icon-btn" aria-label="Fechar">✕</button>
+      </div>
+
+      <fieldset>
+        <legend>Credencial do Google Cloud</legend>
+        <div id="credStatus" class="cred-status"></div>
+        <label class="btn ghost file-btn">
+          <input type="file" id="keyFile" accept=".json,application/json" hidden>
+          Enviar arquivo google-key.json
+        </label>
+        <textarea id="keyText" rows="4" placeholder='…ou cole aqui o conteúdo do JSON ({"type": "service_account", …})' spellcheck="false" autocomplete="off"></textarea>
+        <div class="row">
+          <button type="button" id="btnSaveKey" class="btn primary">Salvar</button>
+          <button type="button" id="btnTestKey" class="btn ghost">Testar conexão</button>
+          <button type="button" id="btnDeleteKey" class="btn danger ghost">Remover</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Voz</legend>
+        <div class="seg" role="radiogroup" aria-label="Tipo de voz">
+          <label><input type="radio" name="family" value="neural2" checked><span>Neural2</span></label>
+          <label><input type="radio" name="family" value="chirp3hd"><span>Chirp 3 HD</span></label>
+        </div>
+        <label class="label" for="voiceSelect">Voz (Português – Brasil)</label>
+        <div class="row">
+          <select id="voiceSelect" class="grow"></select>
+          <button type="button" id="btnPreview" class="btn ghost small">Testar voz</button>
+        </div>
+
+        <label class="label" for="rateRange">Velocidade: <b id="rateVal">1.00×</b></label>
+        <input type="range" id="rateRange" min="0.5" max="2" step="0.05" value="1">
+
+        <label class="label" for="pitchRange">Tom (pitch): <b id="pitchVal">0</b></label>
+        <input type="range" id="pitchRange" min="-10" max="10" step="0.5" value="0">
+        <p id="pitchNote" class="muted small" hidden>As vozes Chirp 3 HD não aceitam ajuste de tom; o controle é ignorado.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Uso estimado neste mês</legend>
+        <div id="usageBox" class="usage"></div>
+        <button type="button" id="btnResetUsage" class="link-btn small">Zerar contador</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>Aparência</legend>
+        <div class="seg" role="radiogroup" aria-label="Tema">
+          <label><input type="radio" name="theme" value="dark" checked><span>Escuro</span></label>
+          <label><input type="radio" name="theme" value="light"><span>Claro</span></label>
+          <label><input type="radio" name="theme" value="system"><span>Sistema</span></label>
+        </div>
+      </fieldset>
+    </form>
+  </dialog>
+
+  <!-- MODAL: CONTINUAR LEITURA -->
+  <dialog id="resumeDialog" class="modal small">
+    <form method="dialog" class="modal-body">
+      <h2>Continuar leitura?</h2>
+      <p id="resumeText"></p>
+      <div class="row end">
+        <button value="restart" class="btn ghost">Recomeçar</button>
+        <button value="continue" class="btn primary" autofocus>Continuar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <audio id="audio" preload="auto"></audio>
+
+  <script src="app.js"></script>
+</body>
+</html>
