@@ -29,16 +29,43 @@ const FAMILY_NAME = { neural2: 'Neural2', chirp3hd: 'Chirp 3 HD', openai: 'OpenA
 // OpenAI TTS
 const OPENAI_SPEECH_URL = 'https://api.openai.com/v1/audio/speech';
 const OPENAI_MODELS_URL = 'https://api.openai.com/v1/models';
-const OPENAI_TTS_MODEL = 'tts-1-hd';
-const OPENAI_PRICE_PER_M = 30; // US$ por 1 milhão de caracteres (tts-1-hd); conferir na página de preços
-const OPENAI_VOICES = [
+// gpt-4o-mini-tts aceita "instructions" (sotaque, ritmo, pronúncia); tts-1-hd não aceita.
+const OPENAI_MODELS = {
+  'gpt-4o-mini-tts': 'gpt-4o-mini-tts · recomendado',
+  'tts-1-hd': 'tts-1-hd · antigo, sem instruções',
+};
+const OPENAI_DEFAULT_MODEL = 'gpt-4o-mini-tts';
+const OPENAI_PRICE_PER_M = 30; // tts-1-hd: US$ por 1 milhão de caracteres
+const OPENAI_MINI_PER_MIN = 0.015; // gpt-4o-mini-tts: estimativa de US$ por minuto de áudio (cobrado por tokens)
+const CHARS_PER_MIN = 900; // ritmo médio de narração em português
+const OPENAI_VOICES_MINI = [
+  ['marin', 'feminina · melhor qualidade'],
+  ['cedar', 'masculina · melhor qualidade'],
   ['onyx', 'masculina, grave'],
   ['nova', 'feminina'],
   ['alloy', 'neutra'],
   ['echo', 'masculina'],
   ['fable', 'expressiva'],
   ['shimmer', 'feminina, suave'],
+  ['coral', 'feminina'],
+  ['ash', 'masculina'],
+  ['sage', 'feminina, calma'],
+  ['ballad', 'masculina, suave'],
+  ['verse', 'masculina, expressiva'],
 ];
+const OPENAI_VOICES_HD = OPENAI_VOICES_MINI.filter(([n]) => ['onyx', 'nova', 'alloy', 'echo', 'fable', 'shimmer', 'coral', 'ash', 'sage'].includes(n));
+const OPENAI_DEFAULT_INSTRUCTIONS = `Leia em português do Brasil (pt-BR), com sotaque brasileiro neutro, como um narrador profissional de audiolivro de São Paulo.
+Nunca use sotaque ou pronúncia de Portugal, nem de qualquer outro país, e nunca troque de idioma: mesmo palavras estrangeiras, nomes próprios e títulos curtos devem ser lidos com pronúncia brasileira.
+Pronúncia do "r": entre vogais e em encontros (como em "caro", "prato") é suave, com um toque leve da língua; no início das palavras e no "rr" (como em "rato", "carro") é aspirado e leve, como um "h" suave; no fim das sílabas (como em "porta", "falar") é suave. Nunca vibre nem arraste o "r".
+"S" e "z" no fim das sílabas soam como "s" (e não "x" ou "ch"). "T" e "d" antes de "i" soam como "tchi" e "dji", como no Brasil.
+Ritmo calmo, natural e fluente, com pausas leves nas vírgulas e pausas maiores nos pontos. Sem engasgos, sem hesitações e sem repetir, pular ou inventar palavras. Leia exatamente o texto fornecido.`;
+
+/** Hash curto (para a chave dos áudios guardados mudar quando as instruções mudarem). */
+function shortHash(t) {
+  let h = 5381;
+  for (let i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
 
 // Gemini (resumos). O modelo fica configurável porque o Google aposenta versões com frequência;
 // se o escolhido não existir mais (404), tenta o apelido que sempre aponta para o Flash mais recente.
@@ -377,7 +404,9 @@ const OpenAITTS = {
     if (!key) throw new AppError('Configure sua OpenAI API Key em Configurações para usar o motor OpenAI.', { code: 'NO_OPENAI' });
     const s = Settings.data;
     // Sem "speed": a velocidade é aplicada no player, então o mesmo áudio guardado serve para qualquer velocidade.
-    const body = { model: OPENAI_TTS_MODEL, input: text, voice: s.openaiVoice, response_format: 'mp3' };
+    const model = s.openaiModel || OPENAI_DEFAULT_MODEL;
+    const body = { model, input: text, voice: s.openaiVoice, response_format: 'mp3' };
+    if (model !== 'tts-1-hd') body.instructions = (s.openaiInstructions || '').trim() || OPENAI_DEFAULT_INSTRUCTIONS;
     let res;
     try {
       res = await fetch(OPENAI_SPEECH_URL, {
@@ -396,7 +425,7 @@ const OpenAITTS = {
     }
     const blob = await res.blob();
     if (!blob.size) throw new AppError('A OpenAI não retornou áudio para este trecho.');
-    Usage.add('openai', text.length);
+    Usage.add(model === 'tts-1-hd' ? 'openai' : 'openaiMini', text.length);
     // clientRate null = usar a velocidade atual das configurações na hora de tocar.
     return { blob: blob.type.startsWith('audio/') ? blob : new Blob([blob], { type: 'audio/mpeg' }), clientRate: null };
   },
@@ -1356,7 +1385,9 @@ const Sleep = {
 const DEFAULT_SETTINGS = {
   engine: 'google', // 'google' | 'openai'
   family: 'neural2',
-  openaiVoice: 'onyx',
+  openaiVoice: 'marin',
+  openaiModel: OPENAI_DEFAULT_MODEL,
+  openaiInstructions: '', // vazio = instruções padrão (OPENAI_DEFAULT_INSTRUCTIONS)
   voices: { neural2: 'pt-BR-Neural2-B', chirp3hd: 'pt-BR-Chirp3-HD-Charon' },
   rate: 1,
   pitch: 0,
@@ -1397,7 +1428,12 @@ const Settings = {
   /** Muda quando qualquer coisa que altera o áudio muda (motor, voz, velocidade, tom). */
   signature() {
     const d = this.data;
-    if (d.engine === 'openai') return ['openai', OPENAI_TTS_MODEL, this.voice].join('|'); // velocidade fica no player
+    if (d.engine === 'openai') {
+      // A velocidade fica no player; o modelo, a voz e as instruções mudam o áudio gerado.
+      const model = d.openaiModel || OPENAI_DEFAULT_MODEL;
+      const instr = model === 'tts-1-hd' ? '' : shortHash((d.openaiInstructions || '').trim() || OPENAI_DEFAULT_INSTRUCTIONS);
+      return ['openai', model, this.voice, instr].join('|');
+    }
     const pitch = d.family !== 'chirp3hd' ? d.pitch : 0;
     return ['google', this.voice, d.rate, pitch].join('|');
   },
@@ -1462,6 +1498,29 @@ const Settings = {
       this.save();
     });
     $('#btnSaveOpenAI').addEventListener('click', () => this.saveOpenAI());
+    const modelSel = $('#openaiModel');
+    Object.entries(OPENAI_MODELS).forEach(([id, label]) => modelSel.add(new Option(label, id)));
+    modelSel.value = d.openaiModel || OPENAI_DEFAULT_MODEL;
+    modelSel.addEventListener('change', () => {
+      d.openaiModel = modelSel.value;
+      this.save();
+      this.fillVoices();
+      this.renderSliders();
+    });
+    const instr = $('#openaiInstructions');
+    instr.value = (d.openaiInstructions || '').trim() || OPENAI_DEFAULT_INSTRUCTIONS;
+    instr.addEventListener('change', () => {
+      const v = instr.value.trim();
+      d.openaiInstructions = v === OPENAI_DEFAULT_INSTRUCTIONS ? '' : v;
+      this.save();
+      toast('Instruções salvas. Os próximos trechos usarão as novas instruções.');
+    });
+    $('#btnResetInstructions').addEventListener('click', () => {
+      instr.value = OPENAI_DEFAULT_INSTRUCTIONS;
+      d.openaiInstructions = '';
+      this.save();
+      toast('Instruções padrão restauradas.');
+    });
     $('#btnDeleteOpenAI').addEventListener('click', () => {
       if (!OpenAITTS.has() || !confirm('Remover a OpenAI API Key deste aparelho?')) return;
       store.del(K.openai);
@@ -1514,6 +1573,12 @@ const Settings = {
     $('#pitchVal').textContent = (d.pitch > 0 ? '+' : '') + d.pitch;
     $('#googleFamily').hidden = openai;
     $('#openaiNote').hidden = !openai;
+    $('#openaiOpts').hidden = !openai;
+    const mini = (d.openaiModel || OPENAI_DEFAULT_MODEL) !== 'tts-1-hd';
+    $('#openaiInstrBox').hidden = !mini;
+    $('#openaiNote').textContent = mini
+      ? 'Vozes geradas por IA. As instruções abaixo pedem leitura em português do Brasil; use "Testar voz" para conferir.'
+      : 'O tts-1-hd não aceita instruções: em português pode soar com sotaque estrangeiro ou de Portugal. Prefira o gpt-4o-mini-tts.';
     $('#voiceLabel').textContent = openai ? 'Voz da OpenAI' : 'Voz (Português – Brasil)';
     const noPitch = openai || d.family === 'chirp3hd';
     $('#pitchRange').disabled = noPitch;
@@ -1603,15 +1668,17 @@ const Settings = {
 
   renderUsage() {
     const u = Usage.get();
-    const openaiChars = u.openai || 0;
-    const openaiCost = (openaiChars / 1e6) * OPENAI_PRICE_PER_M;
+    const hdChars = u.openai || 0;
+    const miniChars = u.openaiMini || 0;
+    const openaiChars = hdChars + miniChars;
+    const openaiCost = (hdChars / 1e6) * OPENAI_PRICE_PER_M + (miniChars / CHARS_PER_MIN) * OPENAI_MINI_PER_MIN;
     $('#usageBox').innerHTML = ['neural2', 'chirp3hd'].map((f) => {
       const n = u[f] || 0;
       const pct = Math.min(100, (n / FREE_TIER_CHARS) * 100);
       return `<div>Google ${FAMILY_NAME[f]}: <b>${fmt(n)}</b> de ${fmt(FREE_TIER_CHARS)} caracteres grátis
         <div class="meter"><div style="width:${pct.toFixed(2)}%"></div></div></div>`;
     }).join('')
-      + `<div>OpenAI (sem cota grátis): <b>${fmt(openaiChars)}</b> caracteres ≈ US$ ${openaiCost.toFixed(2)}</div>`
+      + `<div>OpenAI (sem cota grátis): <b>${fmt(openaiChars)}</b> caracteres ≈ US$ ${openaiCost.toFixed(2)} (estimativa)</div>`
       + `<div class="muted small">Contagem feita só neste aparelho (mês ${u.month}). Os valores oficiais estão nos painéis do Google Cloud e da OpenAI.</div>`;
   },
 
@@ -1651,10 +1718,11 @@ const Settings = {
   fillVoices() {
     const sel = $('#voiceSelect');
     if (this.data.engine === 'openai') {
+      const voices = (this.data.openaiModel || OPENAI_DEFAULT_MODEL) === 'tts-1-hd' ? OPENAI_VOICES_HD : OPENAI_VOICES_MINI;
       sel.innerHTML = '';
-      for (const [name, desc] of OPENAI_VOICES) sel.add(new Option(`${name} · ${desc}`, name));
-      if (!OPENAI_VOICES.some(([n]) => n === this.data.openaiVoice)) {
-        this.data.openaiVoice = OPENAI_VOICES[0][0];
+      for (const [name, desc] of voices) sel.add(new Option(`${name} · ${desc}`, name));
+      if (!voices.some(([n]) => n === this.data.openaiVoice)) {
+        this.data.openaiVoice = voices[0][0];
         this.save();
       }
       sel.value = this.data.openaiVoice;

@@ -191,14 +191,16 @@
 
       <details>
         <summary>🔊 Motor de voz OpenAI (opcional)</summary>
-        <p>Em <strong>Configurações → Voz → Motor de voz</strong> você escolhe entre <strong>Google Cloud</strong> e <strong>OpenAI</strong>. A OpenAI oferece as vozes onyx, nova, alloy, echo, fable e shimmer (modelo <code>tts-1-hd</code>).</p>
+        <p>Em <strong>Configurações → Voz → Motor de voz</strong> você escolhe entre <strong>Google Cloud</strong> e <strong>OpenAI</strong>. O modelo padrão é o <code>gpt-4o-mini-tts</code>, que recebe <strong>instruções de leitura</strong> junto com o texto: o app pede português do Brasil, sotaque brasileiro neutro, "r" brasileiro e ritmo de narrador. Você pode editar essas instruções em <em>Configurações → Voz</em>. As vozes recomendadas pela OpenAI são <strong>marin</strong> e <strong>cedar</strong>; também há onyx, nova, alloy, echo, fable, shimmer e outras.</p>
+        <p class="note">O modelo antigo <code>tts-1-hd</code> continua disponível, mas <strong>não aceita instruções</strong>: em português ele pode soar com sotaque de Portugal ou estrangeiro e trocar de idioma em trechos curtos.</p>
         <ol>
           <li>Acesse <strong>platform.openai.com/api-keys</strong> e clique em <strong>Create new secret key</strong>.</li>
           <li>Prefira uma chave <strong>Restricted</strong> com permissão apenas para áudio (Model capabilities).</li>
           <li>Copie a chave (começa com <code>sk-</code>) e cole em <strong>Configurações → Credencial da OpenAI</strong>. Toque em <strong>Salvar</strong>.</li>
         </ol>
         <ul>
-          <li><strong>Custo:</strong> a OpenAI <strong>não tem cota gratuita</strong>. É preciso comprar créditos em <em>Billing</em>. O <code>tts-1-hd</code> custa cerca de US$ 30 por milhão de caracteres (confira a página de preços da OpenAI).</li>
+          <li><strong>Custo:</strong> a OpenAI <strong>não tem cota gratuita</strong>. É preciso comprar créditos em <em>Billing</em>. O <code>gpt-4o-mini-tts</code> é cobrado por tokens (em geral sai mais barato que o <code>tts-1-hd</code>, que custa cerca de US$ 30 por milhão de caracteres). Confira a página de preços da OpenAI.</li>
+          <li><strong>Se a voz ainda soar estranha:</strong> teste as vozes <em>marin</em> e <em>cedar</em> e ajuste as instruções (por exemplo, "fale mais devagar" ou "sotaque carioca"). Trocar voz ou instruções gera áudios novos para os trechos guardados.</li>
           <li><strong>Limite de gastos:</strong> em <em>Settings → Limits</em> do seu projeto na OpenAI, defina um limite mensal de orçamento.</li>
           <li>As vozes da OpenAI são <strong>geradas por IA</strong> e otimizadas para inglês; em português podem ter leve sotaque. Use <em>Testar voz</em>.</li>
         </ul>
@@ -338,7 +340,16 @@
         <label class="label" for="pitchRange">Tom (pitch): <b id="pitchVal">0</b></label>
         <input type="range" id="pitchRange" min="-10" max="10" step="0.5" value="0">
         <p id="pitchNote" class="muted small" hidden></p>
-        <p id="openaiNote" class="muted small" hidden>Vozes geradas por IA (modelo tts-1-hd). A OpenAI as otimizou para inglês; em português podem soar com leve sotaque estrangeiro. Use "Testar voz" antes.</p>
+        <p id="openaiNote" class="muted small" hidden></p>
+        <div id="openaiOpts" hidden>
+          <label class="label" for="openaiModel">Modelo da OpenAI</label>
+          <select id="openaiModel"></select>
+          <div id="openaiInstrBox">
+            <label class="label" for="openaiInstructions">Instruções de leitura (sotaque, ritmo, pronúncia)</label>
+            <textarea id="openaiInstructions" rows="7" spellcheck="false"></textarea>
+            <button type="button" id="btnResetInstructions" class="link-btn small">Restaurar instruções padrão</button>
+          </div>
+        </div>
       </fieldset>
 
       <fieldset>

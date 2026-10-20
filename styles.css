@@ -250,6 +250,7 @@ fieldset { border: 1px solid var(--border); border-radius: var(--radius); margin
 legend { padding: 0 6px; font-weight: 650; font-size: 14px; }
 .file-btn { display: block; text-align: center; margin: 8px 0; }
 #keyText { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+#openaiInstructions { font-size: 13px; line-height: 1.45; }
 .cred-status { font-size: 14px; padding: 8px 0; word-break: break-all; }
 .cred-status.ok { color: #6fdc8c; }
 :root[data-theme="light"] .cred-status.ok { color: #1b7f3b; }
