@@ -1370,7 +1370,29 @@ const Settings = {
     const s = store.get(K.settings, {});
     this.data = { ...DEFAULT_SETTINGS, ...s, voices: { ...DEFAULT_SETTINGS.voices, ...(s.voices || {}) } };
   },
-  save() { store.set(K.settings, this.data); },
+  save() { store.set(K.settings, this.data); this.renderEngineBar(); },
+
+  setEngine(engine) {
+    if (engine !== 'google' && engine !== 'openai') return;
+    this.data.engine = engine;
+    this.save();
+    this.fillVoices();
+    this.renderSliders();
+    this.renderCred();
+    const missing = missingTtsCreds();
+    if (missing) toast(missing.message, { error: true });
+    else toast(`Leitura com ${engine === 'openai' ? 'OpenAI' : 'Google Cloud'} · voz ${this.voiceShort()}`);
+  },
+
+  voiceShort() { return this.voice.replace('pt-BR-', '').replace('Chirp3-HD-', 'Chirp '); },
+
+  /** Barra rápida abaixo das abas: motor escolhido e nome da voz. */
+  renderEngineBar() {
+    const d = this.data;
+    $$('input[name="engine"], input[name="quickEngine"]').forEach((r) => { r.checked = r.value === d.engine; });
+    const v = $('#engineVoice');
+    if (v) v.textContent = this.voiceShort() + (d.rate !== 1 ?` · ${d.rate.toFixed(2).replace(/\.?0+$/, '')}×` : '');
+  },
   get voice() { return this.data.engine === 'openai' ? this.data.openaiVoice : this.data.voices[this.data.family]; },
   /** Muda quando qualquer coisa que altera o áudio muda (motor, voz, velocidade, tom). */
   signature() {
@@ -1395,7 +1417,7 @@ const Settings = {
 
   init() {
     const d = this.data;
-    $(`input[name="engine"][value="${d.engine}"]`).checked = true;
+    this.renderEngineBar();
     $(`input[name="family"][value="${d.family}"]`).checked = true;
     $(`input[name="theme"][value="${d.theme}"]`).checked = true;
     $('#rateRange').value = d.rate;
@@ -1426,15 +1448,8 @@ const Settings = {
       toast('Chave removida deste aparelho.');
     });
 
-    $$('input[name="engine"]').forEach((r) => r.addEventListener('change', () => {
-      d.engine = r.value;
-      this.save();
-      this.fillVoices();
-      this.renderSliders();
-      this.renderCred();
-      const missing = missingTtsCreds();
-      if (missing) toast(missing.message, { error: true });
-    }));
+    // Motor de voz: nas Configurações e na barra rápida da tela principal (as duas ficam sincronizadas).
+    $$('input[name="engine"], input[name="quickEngine"]').forEach((r) => r.addEventListener('change', () => this.setEngine(r.value)));
     $$('input[name="family"]').forEach((r) => r.addEventListener('change', () => {
       d.family = r.value;
       this.save();

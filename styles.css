@@ -68,6 +68,15 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 .tab.active { background: var(--surface-2); color: var(--text); }
 
+.engine-bar { display: flex; align-items: center; gap: 10px; margin: 10px 16px 0; }
+.engine-label { font-size: 13px; font-weight: 600; color: var(--muted); }
+.seg.compact { flex: 1; max-width: 260px; margin-top: 0; padding: 3px; }
+.seg.compact span { padding: 6px 4px; font-size: 13px; }
+.engine-voice {
+  margin-left: auto; min-width: 0; max-width: 40%; padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px;
+  background: transparent; color: var(--muted); font-size: 12px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 main { max-width: 820px; margin: 0 auto; padding: 16px; }
 .panel { display: none; }
 .panel.active { display: block; }

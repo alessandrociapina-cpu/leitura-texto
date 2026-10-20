@@ -35,6 +35,15 @@
     <button class="tab" role="tab" data-tab="help" aria-selected="false">Ajuda</button>
   </nav>
 
+  <div class="engine-bar">
+    <span class="engine-label" id="engineBarLabel">Voz</span>
+    <div class="seg compact" role="radiogroup" aria-labelledby="engineBarLabel">
+      <label><input type="radio" name="quickEngine" value="google"><span>Google</span></label>
+      <label><input type="radio" name="quickEngine" value="openai"><span>OpenAI</span></label>
+    </div>
+    <button id="engineVoice" class="engine-voice" data-open-settings title="Trocar a voz e a velocidade nas Configurações"></button>
+  </div>
+
   <div id="credBanner" class="banner" hidden>
     <span id="credBannerText">Nenhuma credencial configurada.</span>
     <button class="link-btn" data-open-settings>Configurar chave</button>
