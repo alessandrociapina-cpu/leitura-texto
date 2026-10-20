@@ -52,6 +52,11 @@ button { font: inherit; color: inherit; cursor: pointer; }
   background: var(--bg);
 }
 .brand { display: flex; gap: 10px; align-items: center; font-weight: 650; letter-spacing: .2px; }
+.topbar-right { display: flex; align-items: center; gap: 2px; }
+.app-version {
+  font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .3px;
+  padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px;
+}
 .tabs {
   display: flex; gap: 4px; margin: 0 16px; padding: 4px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px;

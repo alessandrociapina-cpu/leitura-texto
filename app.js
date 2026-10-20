@@ -2090,6 +2090,7 @@ function readShareTarget() {
 }
 
 function init() {
+  $('#appVersion').textContent = 'v' + (self.APP_VERSION || '?');
   Settings.load();
   applyTheme();
   Settings.init();

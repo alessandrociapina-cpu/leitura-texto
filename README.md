@@ -42,6 +42,7 @@ Para testar localmente, rode `python -m http.server 8000` nesta pasta e abra `ht
 ```
 index.html      interface (abas Texto / Livro / Ajuda, player e modais)
 styles.css      tema escuro por padrão, layout mobile-first
+version.js      número da versão (topo da tela e cache do service worker)
 app.js          autenticação JWT, cliente TTS, fila de áudio, leitores ePub/PDF
 manifest.json   manifesto PWA (ícones e share_target)
 sw.js           service worker (cache offline do app e das bibliotecas)
