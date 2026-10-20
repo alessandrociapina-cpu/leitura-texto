@@ -1580,6 +1580,7 @@ const Settings = {
     $('#btnTestKey').disabled = !c;
     const missing = missingTtsCreds();
     $('#credBanner').hidden = !missing;
+    fitViewer();
     $('#credBannerText').textContent = missing?.code === 'NO_OPENAI'
       ? 'Motor OpenAI sem chave configurada.'
       : 'Nenhuma credencial do Google configurada.';
@@ -1685,6 +1686,20 @@ const Settings = {
     }
   },
 };
+
+/** Ajusta a altura do leitor ao espaço livre entre o topo dele e o player fixo
+ *  (o espaço muda com a faixa de aviso, o tamanho da tela e o teclado). */
+function fitViewer() {
+  const v = $('#viewer');
+  if ($('#bookView').hidden || !v.offsetParent) return;
+  const top = v.getBoundingClientRect().top + window.scrollY;
+  const below = $('.book-nav').offsetHeight + 8 + $('#player').offsetHeight + 8;
+  const h = Math.max(260, Math.floor(window.innerHeight - top - below));
+  if (Math.abs(v.offsetHeight - h) < 2) return;
+  v.style.height = h + 'px';
+  try { BookUI.source?.rendition?.resize(); } catch { /* epub.js ainda montando */ }
+}
+window.addEventListener('resize', debounce(fitViewer, 150));
 
 function applyTheme() {
   const t = Settings.data.theme;
@@ -1883,12 +1898,133 @@ const AudioStore = {
 /* =====================================================================
  * "Baixar capítulo": gera e guarda o áudio do capítulo inteiro de uma vez
  * ===================================================================== */
+/* =====================================================================
+ * MP3: juntar os trechos guardados em um único arquivo
+ * Cada trecho é um MP3 completo. Antes de concatenar, remove as etiquetas ID3 e o quadro
+ * "Xing/Info/VBRI" de cada um — esse quadro guarda a duração só daquele trecho e faria
+ * os tocadores mostrarem a duração errada do arquivo inteiro.
+ * ===================================================================== */
+const Mp3 = {
+  BITRATES: {
+    v1: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320], // MPEG-1 Layer III
+    v2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160], // MPEG-2/2.5 Layer III
+  },
+  RATES: { 3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000] },
+
+  /** Tamanho do quadro MPEG Layer III que começa em i, ou 0 se não houver um ali. */
+  frameLength(b, i) {
+    if (i + 4 > b.length || b[i] !== 0xff || (b[i + 1] & 0xe0) !== 0xe0) return 0;
+    const ver = (b[i + 1] >> 3) & 3;
+    const layer = (b[i + 1] >> 1) & 3;
+    const brIdx = b[i + 2] >> 4;
+    const srIdx = (b[i + 2] >> 2) & 3;
+    if (ver === 1 || layer !== 1 || brIdx === 0 || brIdx === 15 || srIdx === 3) return 0;
+    const bitrate = (ver === 3 ? this.BITRATES.v1 : this.BITRATES.v2)[brIdx] * 1000;
+    const rate = this.RATES[ver][srIdx];
+    return Math.floor(((ver === 3 ? 144 : 72) * bitrate) / rate) + ((b[i + 2] >> 1) & 1);
+  },
+
+  hasTag(b, from, to, tags) {
+    for (let i = from; i + 4 <= to; i++) {
+      for (const t of tags) {
+        if (b[i] === t.charCodeAt(0) && b[i + 1] === t.charCodeAt(1) && b[i + 2] === t.charCodeAt(2) && b[i + 3] === t.charCodeAt(3)) return true;
+      }
+    }
+    return false;
+  },
+
+  /** Só os quadros de áudio de um MP3 (sem ID3v2, ID3v1 nem quadro Xing/Info/VBRI). */
+  frames(b) {
+    let start = 0;
+    let end = b.length;
+    if (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) { // "ID3"
+      const size = ((b[6] & 0x7f) << 21) | ((b[7] & 0x7f) << 14) | ((b[8] & 0x7f) << 7) | (b[9] & 0x7f);
+      start = 10 + size + (b[5] & 0x10 ? 10 : 0);
+    }
+    if (end - start > 128 && b[end - 128] === 0x54 && b[end - 127] === 0x41 && b[end - 126] === 0x47) end -= 128; // "TAG"
+    let i = start;
+    const limit = Math.min(end, start + 8192);
+    while (i < limit && !this.frameLength(b, i)) i++;
+    const len = this.frameLength(b, i);
+    if (!len) return b.subarray(start, end);
+    if (this.hasTag(b, i + 4, Math.min(i + len, end), ['Xing', 'Info', 'VBRI'])) i += len;
+    return b.subarray(i, end);
+  },
+
+  /** Junta vários blobs MP3 em um só. */
+  async join(blobs) {
+    const parts = await Promise.all(blobs.map(async (bl) => this.frames(new Uint8Array(await bl.arrayBuffer()))));
+    return new Blob(parts, { type: 'audio/mpeg' });
+  },
+};
+
+/** Entrega um arquivo ao usuário: no iPhone/iPad abre o menu Compartilhar; nos demais, baixa direto. */
+async function saveFile(file) {
+  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (ios && navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: file.name });
+      return;
+    } catch (e) {
+      if (e?.name === 'AbortError') return; // usuário fechou o menu
+    }
+  }
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = file.name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+const safeFileName = (t) => t.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'audio';
+
 const ChapterDownload = {
   job: null,
+  complete: false, // o capítulo exibido já está todo guardado → o botão vira "Exportar MP3"
   CONCURRENCY: 3,
 
   init() {
-    $('#btnDownload').addEventListener('click', () => (this.job ? this.cancel() : this.start()));
+    $('#btnDownload').addEventListener('click', () => {
+      if (this.job) this.cancel();
+      else if (this.complete) this.exportMp3();
+      else this.start();
+    });
+  },
+
+  /** Junta os trechos guardados do capítulo exibido em um único MP3 e entrega o arquivo. */
+  async exportMp3() {
+    const src = BookUI.source;
+    if (!src?.id || this.exporting) return;
+    this.exporting = true;
+    $('#downloadLabel').textContent = 'Gerando MP3…';
+    try {
+      const u = await this.displayedUnit(src);
+      const chunks = await src.getUnit(u);
+      const sig = Settings.signature();
+      const blobs = [];
+      for (let c = 0; c < chunks.length; c++) {
+        const rec = await AudioStore.get(AudioStore.key(src.id, sig, u, c));
+        if (!rec?.blob) {
+          toast('Faltam trechos deste capítulo. Toque em "Baixar" para completá-lo antes de exportar.', { error: true });
+          return;
+        }
+        blobs.push(rec.blob);
+      }
+      const mp3 = blobs.every((b) => /mpeg|mp3/i.test(b.type));
+      const blob = mp3 ? await Mp3.join(blobs) : new Blob(blobs, { type: blobs[0]?.type || 'audio/mpeg' });
+      const name = safeFileName(`${src.title} - ${src.unitLabel(u)}`) + '.mp3';
+      await saveFile(new File([blob], name, { type: 'audio/mpeg' }));
+      const mb = (blob.size / 1048576).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+      toast(`MP3 exportado: ${name} (${mb} MB).`);
+    } catch (e) {
+      handleError(e);
+    } finally {
+      this.exporting = false;
+      this.refresh();
+    }
   },
 
   cancel() { if (this.job) this.job.cancel = true; },
@@ -1947,17 +2083,23 @@ const ChapterDownload = {
     const self = ChapterDownload;
     const btn = $('#btnDownload');
     if (self.job) return self.render();
+    if (self.exporting) return;
     btn.classList.remove('busy');
     const src = BookUI.source;
     const what = src?.kind === 'pdf' ? 'página' : 'capítulo';
-    $('#downloadLabel').textContent = `Baixar ${what}`;
-    if (!src?.id) return;
+    if (!src?.id) { self.complete = false; $('#downloadLabel').textContent = `Baixar ${what}`; return; }
     const u = await self.displayedUnit(src);
     const chunks = await src.getUnit(u).catch(() => []);
     const saved = await AudioStore.countUnit(src.id, Settings.signature(), u);
-    if (BookUI.source !== src || self.job) return;
-    if (chunks.length && saved >= chunks.length) $('#downloadLabel').textContent = `✓ ${what[0].toUpperCase() + what.slice(1)} guardado`;
-    else if (saved > 0) $('#downloadLabel').textContent = `Baixar ${what} (${saved}/${chunks.length})`;
+    if (BookUI.source !== src || self.job || self.exporting) return;
+    self.complete = chunks.length > 0 && saved >= chunks.length;
+    btn.classList.toggle('ready', self.complete);
+    btn.title = self.complete
+      ? `${what[0].toUpperCase() + what.slice(1)} guardado no aparelho — exportar como um arquivo MP3`
+      : `Gerar e guardar no aparelho o áudio ${what === 'página' ? 'desta página inteira' : 'deste capítulo inteiro'}`;
+    $('#downloadLabel').textContent = self.complete
+      ? 'Exportar MP3'
+      : saved > 0 ? `Baixar ${what} (${saved}/${chunks.length})` : `Baixar ${what}`;
   }, 300),
 };
 
@@ -2021,6 +2163,7 @@ const BookUI = {
       this.fillToc();
       $('#summaryBtnLabel').textContent = kind === 'pdf' ? 'Resumir página' : 'Resumir capítulo';
       ChapterDownload.refresh();
+      fitViewer();
       src.attach($('#viewer'));
 
       DB.save({ id: src.id, kind, title: src.title, name, size: file.size, blob: file, opened: Date.now() })
@@ -2444,6 +2587,7 @@ function showTab(name) {
   });
   $$('.panel').forEach((p) => p.classList.toggle('active', p.id === 'tab-' + name));
   store.set(K.tab, name);
+  if (name === 'book') fitViewer();
 }
 
 function readShareTarget() {

@@ -172,6 +172,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .summary-fab:hover { border-color: var(--accent); }
 .sel-bar:not([hidden]) ~ .fab-row { display: none; }
 .summary-fab.busy { border-color: var(--accent); }
+.summary-fab.ready { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.summary-fab.ready svg { color: var(--accent-ink); }
 .summary-fab.busy svg { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
 .sel-info { flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
