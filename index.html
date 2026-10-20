@@ -36,7 +36,7 @@
   </nav>
 
   <div id="credBanner" class="banner" hidden>
-    Nenhuma credencial configurada.
+    <span id="credBannerText">Nenhuma credencial configurada.</span>
     <button class="link-btn" data-open-settings>Configurar chave</button>
     ·
     <button class="link-btn" data-goto-help>Como obter?</button>
@@ -87,10 +87,16 @@
             <button id="btnReadSel" class="btn small primary">▶ Ler daqui</button>
             <button id="btnClearSel" class="icon-btn small" aria-label="Cancelar escolha" title="Cancelar escolha">✕</button>
           </div>
-          <button id="btnSummary" class="summary-fab" title="Gerar um resumo com o Gemini">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4L12 3Z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></svg>
-            <span id="summaryBtnLabel">Resumir capítulo</span>
-          </button>
+          <div class="fab-row">
+            <button id="btnDownload" class="summary-fab" title="Gerar e guardar no aparelho o áudio deste capítulo inteiro">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>
+              <span id="downloadLabel">Baixar capítulo</span>
+            </button>
+            <button id="btnSummary" class="summary-fab" title="Gerar um resumo com o Gemini">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4L12 3Z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></svg>
+              <span id="summaryBtnLabel">Resumir capítulo</span>
+            </button>
+          </div>
         </div>
         <div class="book-nav">
           <button id="btnPrevView" class="btn ghost small">‹ Anterior</button>
@@ -171,6 +177,32 @@
           <li>A chave fica salva no armazenamento local deste navegador (<code>localStorage</code>) e só é enviada ao Google, nunca a outro servidor.</li>
           <li>Qualquer pessoa com acesso a este aparelho/navegador poderia extraí-la. Não use em computadores compartilhados.</li>
           <li>Use um projeto exclusivo para este app e a conta de serviço sem papéis. Se a chave vazar, apague-a no console (aba <em>Chaves</em>) e gere outra.</li>
+        </ul>
+      </details>
+
+      <details>
+        <summary>🔊 Motor de voz OpenAI (opcional)</summary>
+        <p>Em <strong>Configurações → Voz → Motor de voz</strong> você escolhe entre <strong>Google Cloud</strong> e <strong>OpenAI</strong>. A OpenAI oferece as vozes onyx, nova, alloy, echo, fable e shimmer (modelo <code>tts-1-hd</code>).</p>
+        <ol>
+          <li>Acesse <strong>platform.openai.com/api-keys</strong> e clique em <strong>Create new secret key</strong>.</li>
+          <li>Prefira uma chave <strong>Restricted</strong> com permissão apenas para áudio (Model capabilities).</li>
+          <li>Copie a chave (começa com <code>sk-</code>) e cole em <strong>Configurações → Credencial da OpenAI</strong>. Toque em <strong>Salvar</strong>.</li>
+        </ol>
+        <ul>
+          <li><strong>Custo:</strong> a OpenAI <strong>não tem cota gratuita</strong>. É preciso comprar créditos em <em>Billing</em>. O <code>tts-1-hd</code> custa cerca de US$ 30 por milhão de caracteres (confira a página de preços da OpenAI).</li>
+          <li><strong>Limite de gastos:</strong> em <em>Settings → Limits</em> do seu projeto na OpenAI, defina um limite mensal de orçamento.</li>
+          <li>As vozes da OpenAI são <strong>geradas por IA</strong> e otimizadas para inglês; em português podem ter leve sotaque. Use <em>Testar voz</em>.</li>
+        </ul>
+      </details>
+
+      <details>
+        <summary>💾 Áudios guardados (ouvir de novo sem gastar)</summary>
+        <ul>
+          <li>Todo trecho de áudio gerado para um <strong>livro</strong> (ePub ou PDF) fica guardado neste aparelho. Ao reouvir, o app usa o áudio guardado e <strong>não chama a API de novo</strong>, com qualquer motor.</li>
+          <li>No livro, o botão <strong>Baixar capítulo</strong> gera o áudio do capítulo exibido inteiro de uma vez. Depois disso, ele toca até sem internet.</li>
+          <li>O áudio guardado vale para a voz em que foi gerado. Trocar a voz (ou, no Google, a velocidade e o tom) gera áudios novos. Na OpenAI a velocidade é aplicada no player, então mudá-la não gera nada novo.</li>
+          <li>Em <strong>Configurações → Áudios guardados</strong> você vê o espaço ocupado e pode apagar tudo. Remover um livro da lista de recentes apaga os áudios dele.</li>
+          <li>Os textos colados na aba Texto não são guardados.</li>
         </ul>
       </details>
 
@@ -258,12 +290,32 @@
       </fieldset>
 
       <fieldset>
-        <legend>Voz</legend>
-        <div class="seg" role="radiogroup" aria-label="Tipo de voz">
-          <label><input type="radio" name="family" value="neural2" checked><span>Neural2</span></label>
-          <label><input type="radio" name="family" value="chirp3hd"><span>Chirp 3 HD</span></label>
+        <legend>Credencial da OpenAI</legend>
+        <div id="openaiStatus" class="cred-status"></div>
+        <label class="label" for="openaiKey">OpenAI API Key</label>
+        <input type="password" id="openaiKey" placeholder="sk-…" autocomplete="off" spellcheck="false">
+        <div class="row">
+          <button type="button" id="btnSaveOpenAI" class="btn primary">Salvar</button>
+          <button type="button" id="btnDeleteOpenAI" class="btn danger ghost">Remover</button>
         </div>
-        <label class="label" for="voiceSelect">Voz (Português – Brasil)</label>
+        <p class="muted small">Crie a chave em platform.openai.com/api-keys. A OpenAI não tem cota gratuita (veja Ajuda).</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Voz</legend>
+        <span class="label">Motor de voz</span>
+        <div class="seg" role="radiogroup" aria-label="Motor de voz">
+          <label><input type="radio" name="engine" value="google" checked><span>Google Cloud</span></label>
+          <label><input type="radio" name="engine" value="openai"><span>OpenAI</span></label>
+        </div>
+        <div id="googleFamily">
+          <span class="label">Tipo de voz do Google</span>
+          <div class="seg" role="radiogroup" aria-label="Tipo de voz do Google">
+            <label><input type="radio" name="family" value="neural2" checked><span>Neural2</span></label>
+            <label><input type="radio" name="family" value="chirp3hd"><span>Chirp 3 HD</span></label>
+          </div>
+        </div>
+        <label class="label" for="voiceSelect" id="voiceLabel">Voz (Português – Brasil)</label>
         <div class="row">
           <select id="voiceSelect" class="grow"></select>
           <button type="button" id="btnPreview" class="btn ghost small">Testar voz</button>
@@ -274,7 +326,8 @@
 
         <label class="label" for="pitchRange">Tom (pitch): <b id="pitchVal">0</b></label>
         <input type="range" id="pitchRange" min="-10" max="10" step="0.5" value="0">
-        <p id="pitchNote" class="muted small" hidden>As vozes Chirp 3 HD não aceitam ajuste de tom; o controle é ignorado.</p>
+        <p id="pitchNote" class="muted small" hidden></p>
+        <p id="openaiNote" class="muted small" hidden>Vozes geradas por IA (modelo tts-1-hd). A OpenAI as otimizou para inglês; em português podem soar com leve sotaque estrangeiro. Use "Testar voz" antes.</p>
       </fieldset>
 
       <fieldset>
@@ -295,6 +348,13 @@
         <legend>Uso estimado neste mês</legend>
         <div id="usageBox" class="usage"></div>
         <button type="button" id="btnResetUsage" class="link-btn small">Zerar contador</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>Áudios guardados</legend>
+        <p id="storageInfo" class="small"></p>
+        <p class="muted small">Todo áudio gerado para um livro fica guardado neste aparelho; reouvir não chama a API de novo. Use "Baixar capítulo" no livro para gerar um capítulo inteiro de uma vez. Trocar a voz gera áudios novos.</p>
+        <button type="button" id="btnClearAudio" class="btn danger ghost small">Apagar áudios guardados</button>
       </fieldset>
 
       <fieldset>

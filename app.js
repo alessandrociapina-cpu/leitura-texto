@@ -24,7 +24,21 @@ const SENTENCE_MAX = 400; // frases maiores que isso são quebradas (a API recus
 const PREFETCH = 3;      // trechos sintetizados à frente do atual (livros: 1 trecho por parágrafo)
 const AUDIO_CACHE = 40;  // trechos de áudio mantidos em memória
 
-const FAMILY_NAME = { neural2: 'Neural2', chirp3hd: 'Chirp 3 HD' };
+const FAMILY_NAME = { neural2: 'Neural2', chirp3hd: 'Chirp 3 HD', openai: 'OpenAI' };
+
+// OpenAI TTS
+const OPENAI_SPEECH_URL = 'https://api.openai.com/v1/audio/speech';
+const OPENAI_MODELS_URL = 'https://api.openai.com/v1/models';
+const OPENAI_TTS_MODEL = 'tts-1-hd';
+const OPENAI_PRICE_PER_M = 30; // US$ por 1 milhão de caracteres (tts-1-hd); conferir na página de preços
+const OPENAI_VOICES = [
+  ['onyx', 'masculina, grave'],
+  ['nova', 'feminina'],
+  ['alloy', 'neutra'],
+  ['echo', 'masculina'],
+  ['fable', 'expressiva'],
+  ['shimmer', 'feminina, suave'],
+];
 
 // Gemini (resumos). O modelo fica configurável porque o Google aposenta versões com frequência;
 // se o escolhido não existir mais (404), tenta o apelido que sempre aponta para o Flash mais recente.
@@ -57,6 +71,7 @@ const K = {
   tab: 'lv.tab',
   progress: (id) => 'lv.progress.' + id,
   gemini: 'lv.gemini',
+  openai: 'lv.openai',
   summary: (id, u) => `lv.summary.${id}.${u}`,
 };
 
@@ -99,6 +114,7 @@ function handleError(e) {
   console.error(e);
   toast(e?.message || String(e), { error: true });
   if (e?.code === 'NO_CREDS') Settings.open();
+  if (e?.code === 'NO_OPENAI') { Settings.open(); $('#openaiKey').focus(); }
 }
 
 const scriptPromises = {};
@@ -292,8 +308,12 @@ const TTS = {
     return data;
   },
 
-  /** Sintetiza um trecho. Retorna { blob (MP3), clientRate }. */
-  async synthesize(text) {
+  /** Sintetiza um trecho com o motor escolhido. Retorna { blob (MP3), clientRate }. */
+  synthesize(text) {
+    return Settings.data.engine === 'openai' ? OpenAITTS.synthesize(text) : this.synthesizeGoogle(text);
+  },
+
+  async synthesizeGoogle(text) {
     const s = Settings.data;
     const voice = Settings.voice;
     const isChirp = s.family === 'chirp3hd';
@@ -334,13 +354,85 @@ const TTS = {
 };
 
 /* =====================================================================
+ * OpenAI Text-to-Speech (REST) — POST /v1/audio/speech devolve o MP3 direto
+ * ===================================================================== */
+function describeOpenAIError(status, data) {
+  const err = data?.error || {};
+  const msg = err.message || '';
+  if (status === 401) return 'A OpenAI API Key é inválida ou foi revogada. Confira em Configurações.';
+  if (status === 429 && /insufficient_quota|quota|billing/i.test(`${err.code} ${err.type} ${msg}`))
+    return 'Sua conta da OpenAI está sem créditos. Adicione créditos em platform.openai.com → Billing.';
+  if (status === 429) return 'Limite de pedidos da OpenAI atingido. Aguarde um pouco e tente de novo.';
+  if (status === 403) return 'A OpenAI negou acesso: a chave pode não ter permissão de áudio (chave restrita) ou o país não é suportado. ' + msg;
+  if (status >= 500) return 'A OpenAI está indisponível agora. Tente de novo em instantes.';
+  return `Erro ${status} da OpenAI${msg ? ': ' + msg : ''}`;
+}
+
+const OpenAITTS = {
+  key() { return store.get(K.openai)?.key || ''; },
+  has() { return !!this.key(); },
+
+  async synthesize(text) {
+    const key = this.key();
+    if (!key) throw new AppError('Configure sua OpenAI API Key em Configurações para usar o motor OpenAI.', { code: 'NO_OPENAI' });
+    const s = Settings.data;
+    // Sem "speed": a velocidade é aplicada no player, então o mesmo áudio guardado serve para qualquer velocidade.
+    const body = { model: OPENAI_TTS_MODEL, input: text, voice: s.openaiVoice, response_format: 'mp3' };
+    let res;
+    try {
+      res = await fetch(OPENAI_SPEECH_URL, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      if (!navigator.onLine) throw new AppError('Sem conexão com a internet.', { code: 'NET' });
+      // A OpenAI responde "chave inválida" sem cabeçalho CORS; o navegador só vê uma falha de rede.
+      throw new AppError('A OpenAI recusou o pedido. Isso costuma acontecer quando a OpenAI API Key é inválida ou foi revogada. Confira a chave em Configurações.', { code: 'OPENAI' });
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new AppError(describeOpenAIError(res.status, data), { code: 'OPENAI', status: res.status });
+    }
+    const blob = await res.blob();
+    if (!blob.size) throw new AppError('A OpenAI não retornou áudio para este trecho.');
+    Usage.add('openai', text.length);
+    // clientRate null = usar a velocidade atual das configurações na hora de tocar.
+    return { blob: blob.type.startsWith('audio/') ? blob : new Blob([blob], { type: 'audio/mpeg' }), clientRate: null };
+  },
+
+  /** Valida a chave listando modelos (não gera áudio, não gasta créditos). */
+  async check() {
+    let res;
+    try {
+      res = await fetch(OPENAI_MODELS_URL, { headers: { Authorization: 'Bearer ' + this.key() } });
+    } catch {
+      throw new AppError('Sem conexão com a OpenAI. Verifique a internet.', { code: 'NET' });
+    }
+    // 403 = chave restrita sem permissão de listar modelos: ainda pode servir para áudio.
+    if (!res.ok && res.status !== 403) {
+      const data = await res.json().catch(() => ({}));
+      throw new AppError(describeOpenAIError(res.status, data), { code: 'OPENAI', status: res.status });
+    }
+  },
+};
+
+/** Erro de credencial ausente para o motor escolhido, ou null se está tudo configurado. */
+function missingTtsCreds() {
+  if (Settings.data.engine === 'openai') {
+    return OpenAITTS.has() ? null : new AppError('O motor OpenAI está selecionado, mas a OpenAI API Key não foi preenchida em Configurações.', { code: 'NO_OPENAI' });
+  }
+  return Auth.has() ? null : new AppError('O motor Google Cloud está selecionado, mas a chave JSON do Google não foi enviada em Configurações.', { code: 'NO_CREDS' });
+}
+
+/* =====================================================================
  * Uso estimado (caracteres enviados no mês, por tipo de voz)
  * ===================================================================== */
 const Usage = {
   month: () => new Date().toISOString().slice(0, 7),
   get() {
     const u = store.get(K.usage);
-    return u && u.month === this.month() ? u : { month: this.month(), neural2: 0, chirp3hd: 0 };
+    return u && u.month === this.month() ? u : { month: this.month(), neural2: 0, chirp3hd: 0, openai: 0 };
   },
   add(family, n) {
     const u = this.get();
@@ -928,10 +1020,11 @@ const Player = {
   /** Troca para o áudio do trecho e toca. Não espera nada antes do play(), então pode ser
    *  chamado direto do evento 'ended' — exigência dos celulares para tocar com a tela bloqueada. */
   async startItem(gen, item, chunk) {
+    const rate = item.clientRate ?? Settings.data.rate;
     audio.loop = false;
     audio.src = item.url;
-    audio.defaultPlaybackRate = item.clientRate;
-    audio.playbackRate = item.clientRate;
+    audio.defaultPlaybackRate = rate;
+    audio.playbackRate = rate;
     await audio.play();
     if (gen !== this.gen) return;
     this.stopP = 0;
@@ -965,7 +1058,7 @@ const Player = {
     if (p) {
       this.cache.delete(key); // move para o fim (LRU)
     } else {
-      p = TTS.synthesize(text).then((r) => ({ url: URL.createObjectURL(r.blob), clientRate: r.clientRate }));
+      p = this.loadOrSynthesize(u, c, text);
       p.then((r) => { if (this.cache.get(key) === p) this.ready.set(key, r); }, () => this.cache.delete(key));
     }
     this.cache.set(key, p);
@@ -976,6 +1069,17 @@ const Player = {
       oldP.then((r) => { if (audio.src !== r.url) URL.revokeObjectURL(r.url); }).catch(() => {});
     }
     return p;
+  },
+
+  /** Usa o áudio guardado no aparelho, se houver; senão sintetiza e guarda (só livros). */
+  async loadOrSynthesize(u, c, text) {
+    const id = this.source?.id;
+    const k = id ? AudioStore.key(id, Settings.signature(), u, c) : null;
+    const saved = k && await AudioStore.get(k);
+    if (saved?.blob) return { url: URL.createObjectURL(saved.blob), clientRate: saved.clientRate };
+    const r = await TTS.synthesize(text);
+    if (k) AudioStore.put({ k, book: id, u, c, blob: r.blob, clientRate: r.clientRate, t: Date.now() });
+    return { url: URL.createObjectURL(r.blob), clientRate: r.clientRate };
   },
 
   clearCache() {
@@ -1250,7 +1354,9 @@ const Sleep = {
  * Configurações
  * ===================================================================== */
 const DEFAULT_SETTINGS = {
+  engine: 'google', // 'google' | 'openai'
   family: 'neural2',
+  openaiVoice: 'onyx',
   voices: { neural2: 'pt-BR-Neural2-B', chirp3hd: 'pt-BR-Chirp3-HD-Charon' },
   rate: 1,
   pitch: 0,
@@ -1265,14 +1371,23 @@ const Settings = {
     this.data = { ...DEFAULT_SETTINGS, ...s, voices: { ...DEFAULT_SETTINGS.voices, ...(s.voices || {}) } };
   },
   save() { store.set(K.settings, this.data); },
-  get voice() { return this.data.voices[this.data.family]; },
+  get voice() { return this.data.engine === 'openai' ? this.data.openaiVoice : this.data.voices[this.data.family]; },
+  /** Muda quando qualquer coisa que altera o áudio muda (motor, voz, velocidade, tom). */
   signature() {
     const d = this.data;
-    return [this.voice, d.rate, d.family === 'chirp3hd' ? 0 : d.pitch].join('|');
+    if (d.engine === 'openai') return ['openai', OPENAI_TTS_MODEL, this.voice].join('|'); // velocidade fica no player
+    const pitch = d.family !== 'chirp3hd' ? d.pitch : 0;
+    return ['google', this.voice, d.rate, pitch].join('|');
   },
 
   open() {
+    $(`input[name="engine"][value="${this.data.engine}"]`).checked = true;
+    $(`input[name="family"][value="${this.data.family}"]`).checked = true;
+    this.fillVoices();
+    this.renderSliders();
     this.renderCred();
+    this.renderOpenAI();
+    this.renderStorage();
     this.renderGemini();
     this.renderUsage();
     $('#settingsDialog').showModal();
@@ -1280,6 +1395,7 @@ const Settings = {
 
   init() {
     const d = this.data;
+    $(`input[name="engine"][value="${d.engine}"]`).checked = true;
     $(`input[name="family"][value="${d.family}"]`).checked = true;
     $(`input[name="theme"][value="${d.theme}"]`).checked = true;
     $('#rateRange').value = d.rate;
@@ -1310,19 +1426,55 @@ const Settings = {
       toast('Chave removida deste aparelho.');
     });
 
+    $$('input[name="engine"]').forEach((r) => r.addEventListener('change', () => {
+      d.engine = r.value;
+      this.save();
+      this.fillVoices();
+      this.renderSliders();
+      this.renderCred();
+      const missing = missingTtsCreds();
+      if (missing) toast(missing.message, { error: true });
+    }));
     $$('input[name="family"]').forEach((r) => r.addEventListener('change', () => {
       d.family = r.value;
       this.save();
       this.fillVoices();
       this.renderSliders();
     }));
-    $('#voiceSelect').addEventListener('change', (e) => { d.voices[d.family] = e.target.value; this.save(); });
-    $('#rateRange').addEventListener('input', (e) => { d.rate = Number(e.target.value); this.renderSliders(); });
+    $('#voiceSelect').addEventListener('change', (e) => {
+      if (d.engine === 'openai') d.openaiVoice = e.target.value;
+      else d.voices[d.family] = e.target.value;
+      this.save();
+    });
+    $('#btnSaveOpenAI').addEventListener('click', () => this.saveOpenAI());
+    $('#btnDeleteOpenAI').addEventListener('click', () => {
+      if (!OpenAITTS.has() || !confirm('Remover a OpenAI API Key deste aparelho?')) return;
+      store.del(K.openai);
+      this.renderOpenAI();
+      this.renderCred();
+      toast('Chave da OpenAI removida deste aparelho.');
+    });
+    $('#openaiKey').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); this.saveOpenAI(); } // não deixa o Enter fechar o modal
+    });
+    $('#rateRange').addEventListener('input', (e) => {
+      d.rate = Number(e.target.value);
+      this.renderSliders();
+      // OpenAI: a velocidade é do player, então já vale para o trecho que está tocando.
+      if (d.engine === 'openai' && audio.src !== Player.silentUrl) { audio.defaultPlaybackRate = d.rate; audio.playbackRate = d.rate; }
+    });
     $('#pitchRange').addEventListener('input', (e) => { d.pitch = Number(e.target.value); this.renderSliders(); });
     $('#rateRange').addEventListener('change', () => this.save());
     $('#pitchRange').addEventListener('change', () => this.save());
     $('#btnPreview').addEventListener('click', () => this.preview());
     $('#btnResetUsage').addEventListener('click', () => { Usage.reset(); this.renderUsage(); });
+    $('#btnClearAudio').addEventListener('click', async () => {
+      if (!confirm('Apagar todos os áudios guardados? Reouvir esses trechos vai gastar créditos/cota de novo.')) return;
+      await AudioStore.clear();
+      this.renderStorage();
+      ChapterDownload.refresh();
+      toast('Áudios guardados apagados.');
+    });
     $('#btnSaveGemini').addEventListener('click', () => this.saveGemini());
     $('#btnDeleteGemini').addEventListener('click', () => {
       if (!Gemini.has() || !confirm('Remover a Gemini API Key deste aparelho?')) return;
@@ -1342,11 +1494,52 @@ const Settings = {
 
   renderSliders() {
     const d = this.data;
+    const openai = d.engine === 'openai';
     $('#rateVal').textContent = d.rate.toFixed(2) + '×';
     $('#pitchVal').textContent = (d.pitch > 0 ? '+' : '') + d.pitch;
-    const chirp = d.family === 'chirp3hd';
-    $('#pitchRange').disabled = chirp;
-    $('#pitchNote').hidden = !chirp;
+    $('#googleFamily').hidden = openai;
+    $('#openaiNote').hidden = !openai;
+    $('#voiceLabel').textContent = openai ? 'Voz da OpenAI' : 'Voz (Português – Brasil)';
+    const noPitch = openai || d.family === 'chirp3hd';
+    $('#pitchRange').disabled = noPitch;
+    $('#pitchNote').hidden = !noPitch;
+    $('#pitchNote').textContent = openai
+      ? 'A OpenAI não aceita ajuste de tom; o controle é ignorado.'
+      : 'As vozes Chirp 3 HD não aceitam ajuste de tom; o controle é ignorado.';
+  },
+
+  async saveOpenAI() {
+    const key = $('#openaiKey').value.trim().replace(/^["'`]+|["'`]+$/g, '').replace(/\s+/g, '');
+    if (!key) return toast('Cole a OpenAI API Key primeiro.');
+    if (key.length < 20) return toast('Essa chave parece incompleta. Confira se copiou ela inteira.', { error: true });
+    store.set(K.openai, { key });
+    $('#openaiKey').value = '';
+    this.renderOpenAI();
+    this.renderCred();
+    toast('Chave salva. Testando com a OpenAI…');
+    try {
+      await OpenAITTS.check();
+      toast('Chave da OpenAI OK ✓');
+    } catch (e) {
+      handleError(e);
+    }
+  },
+
+  async renderStorage() {
+    const { count, bytes } = await AudioStore.stats();
+    const mb = (bytes / 1048576).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+    $('#storageInfo').textContent = count
+      ? `${fmt(count)} trechos de áudio guardados neste aparelho (${mb} MB).`
+      : 'Nenhum áudio guardado ainda.';
+    $('#btnClearAudio').disabled = !count;
+  },
+
+  renderOpenAI() {
+    const k = OpenAITTS.key();
+    const el = $('#openaiStatus');
+    el.className = 'cred-status' + (k ? ' ok' : '');
+    el.textContent = k ? `✓ Chave salva (termina em …${k.slice(-4)})` : 'Nenhuma chave da OpenAI salva.';
+    $('#btnDeleteOpenAI').disabled = !k;
   },
 
   async saveGemini() {
@@ -1385,17 +1578,25 @@ const Settings = {
     el.textContent = c ? `✓ Chave salva: ${c.client_email}` : 'Nenhuma chave salva neste aparelho.';
     $('#btnDeleteKey').disabled = !c;
     $('#btnTestKey').disabled = !c;
-    $('#credBanner').hidden = !!c;
+    const missing = missingTtsCreds();
+    $('#credBanner').hidden = !missing;
+    $('#credBannerText').textContent = missing?.code === 'NO_OPENAI'
+      ? 'Motor OpenAI sem chave configurada.'
+      : 'Nenhuma credencial do Google configurada.';
   },
 
   renderUsage() {
     const u = Usage.get();
+    const openaiChars = u.openai || 0;
+    const openaiCost = (openaiChars / 1e6) * OPENAI_PRICE_PER_M;
     $('#usageBox').innerHTML = ['neural2', 'chirp3hd'].map((f) => {
       const n = u[f] || 0;
       const pct = Math.min(100, (n / FREE_TIER_CHARS) * 100);
-      return `<div>${FAMILY_NAME[f]}: <b>${fmt(n)}</b> de ${fmt(FREE_TIER_CHARS)} caracteres grátis
+      return `<div>Google ${FAMILY_NAME[f]}: <b>${fmt(n)}</b> de ${fmt(FREE_TIER_CHARS)} caracteres grátis
         <div class="meter"><div style="width:${pct.toFixed(2)}%"></div></div></div>`;
-    }).join('') + `<div class="muted small">Contagem feita só neste aparelho (mês ${u.month}). O valor oficial está no console do Google Cloud.</div>`;
+    }).join('')
+      + `<div>OpenAI (sem cota grátis): <b>${fmt(openaiChars)}</b> caracteres ≈ US$ ${openaiCost.toFixed(2)}</div>`
+      + `<div class="muted small">Contagem feita só neste aparelho (mês ${u.month}). Os valores oficiais estão nos painéis do Google Cloud e da OpenAI.</div>`;
   },
 
   async saveKey(text) {
@@ -1432,13 +1633,23 @@ const Settings = {
   },
 
   fillVoices() {
+    const sel = $('#voiceSelect');
+    if (this.data.engine === 'openai') {
+      sel.innerHTML = '';
+      for (const [name, desc] of OPENAI_VOICES) sel.add(new Option(`${name} · ${desc}`, name));
+      if (!OPENAI_VOICES.some(([n]) => n === this.data.openaiVoice)) {
+        this.data.openaiVoice = OPENAI_VOICES[0][0];
+        this.save();
+      }
+      sel.value = this.data.openaiVoice;
+      return;
+    }
     const fam = this.data.family;
     const re = fam === 'neural2' ? /Neural2/ : /Chirp3-HD/;
     const cached = store.get(K.voices)?.list || [];
     let items = cached.filter((v) => re.test(v.name)).map((v) => [v.name, v.gender]);
     if (!items.length) items = FALLBACK_VOICES[fam];
     items.sort((a, b) => a[0].localeCompare(b[0]));
-    const sel = $('#voiceSelect');
     sel.innerHTML = '';
     for (const [name, gender] of items) {
       const short = name.replace('pt-BR-', '').replace('Chirp3-HD-', '');
@@ -1464,7 +1675,7 @@ const Settings = {
       const r = await TTS.synthesize(`Olá! Esta é a voz ${short}. Boa leitura!`);
       if (Player.state === 'playing') Player.pause();
       a.src = URL.createObjectURL(r.blob);
-      a.playbackRate = r.clientRate;
+      a.playbackRate = r.clientRate ?? Settings.data.rate;
       await a.play();
       this.renderUsage();
     } catch (e) {
@@ -1528,7 +1739,8 @@ const Quick = {
   listen() {
     const text = $('#quickText').value.trim();
     if (!text) return toast('Cole um texto primeiro.');
-    if (!Auth.has()) return handleError(new AppError('Configure sua chave do Google Cloud primeiro.', { code: 'NO_CREDS' }));
+    const missing = missingTtsCreds();
+    if (missing) return handleError(missing);
     Player.unlock();
     this.source = new TextSource(text);
     if (!this.source.chunks.length) return toast('Não há texto legível.');
@@ -1566,19 +1778,28 @@ const DB = {
   open() {
     if (!this._db) {
       this._db = new Promise((resolve, reject) => {
-        const req = indexedDB.open('leitura-voz', 1);
-        req.onupgradeneeded = () => req.result.createObjectStore('books', { keyPath: 'id' });
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
+        const req = indexedDB.open('leitura-voz', 2);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains('books')) db.createObjectStore('books', { keyPath: 'id' });
+          if (!db.objectStoreNames.contains('audio')) db.createObjectStore('audio', { keyPath: 'k' }).createIndex('book', 'book');
+        };
+        req.onsuccess = () => {
+          const db = req.result;
+          // Outra aba abriu uma versão nova do banco: fecha esta conexão para não travar a atualização.
+          db.onversionchange = () => { db.close(); this._db = null; };
+          resolve(db);
+        };
+        req.onerror = () => { this._db = null; reject(req.error); };
       });
     }
     return this._db;
   },
-  async run(mode, fn) {
+  async run(mode, fn, store = 'books') {
     const db = await this.open();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction('books', mode);
-      const req = fn(tx.objectStore('books'));
+      const tx = db.transaction(store, mode);
+      const req = fn(tx.objectStore(store));
       tx.oncomplete = () => resolve(req?.result);
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error);
@@ -1591,8 +1812,153 @@ const DB = {
   async save(rec, keep = 8) {
     await this.put(rec);
     const all = (await this.all()).sort((a, b) => b.opened - a.opened);
-    for (const old of all.slice(keep)) await this.del(old.id);
+    for (const old of all.slice(keep)) { await this.del(old.id); await AudioStore.deleteBook(old.id); }
   },
+};
+
+/* =====================================================================
+ * Áudios guardados (IndexedDB): cada trecho sintetizado de um livro fica no aparelho,
+ * então reouvir não chama a API de novo (nem gasta créditos).
+ * Chave: livro | motor+voz | capítulo:trecho
+ * ===================================================================== */
+const AudioStore = {
+  warnedFull: false,
+  key: (book, sig, u, c) => `${book}|${sig}|${u}:${c}`,
+
+  /** Nunca segura a leitura: se o banco não responder em 1,5 s, segue sem o áudio guardado. */
+  async get(k) {
+    const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 1500));
+    try { return await Promise.race([DB.run('readonly', (s) => s.get(k), 'audio'), timeout]); } catch { return null; }
+  },
+
+  async put(rec) {
+    try {
+      await DB.run('readwrite', (s) => s.put(rec), 'audio');
+      ChapterDownload.refresh();
+      if (!this.askedPersist) { this.askedPersist = true; navigator.storage?.persist?.().catch(() => {}); }
+    } catch (e) {
+      console.warn('Áudio não guardado:', e);
+      if (!this.warnedFull && e?.name === 'QuotaExceededError') {
+        this.warnedFull = true;
+        toast('Sem espaço no aparelho para guardar mais áudios. Apague alguns em Configurações.', { error: true });
+      }
+    }
+  },
+
+  /** Quantos trechos do capítulo u já estão guardados para a voz atual. */
+  async countUnit(book, sig, u) {
+    const prefix = this.key(book, sig, u, '');
+    const range = IDBKeyRange.bound(prefix, prefix + '\uffff');
+    try { return await DB.run('readonly', (s) => s.count(range), 'audio'); } catch { return 0; }
+  },
+
+  async deleteBook(book) {
+    try {
+      await DB.run('readwrite', (s) => {
+        const req = s.index('book').openKeyCursor(IDBKeyRange.only(book));
+        req.onsuccess = () => { const cur = req.result; if (cur) { s.delete(cur.primaryKey); cur.continue(); } };
+        return null;
+      }, 'audio');
+    } catch (e) { console.warn(e); }
+  },
+
+  async clear() {
+    try { await DB.run('readwrite', (s) => s.clear(), 'audio'); } catch (e) { console.warn(e); }
+  },
+
+  /** { count, bytes } de todos os áudios guardados. */
+  async stats() {
+    let count = 0, bytes = 0;
+    try {
+      await DB.run('readonly', (s) => {
+        const req = s.openCursor();
+        req.onsuccess = () => { const cur = req.result; if (cur) { count++; bytes += cur.value.blob?.size || 0; cur.continue(); } };
+        return null;
+      }, 'audio');
+    } catch { /* IndexedDB indisponível */ }
+    return { count, bytes };
+  },
+};
+
+/* =====================================================================
+ * "Baixar capítulo": gera e guarda o áudio do capítulo inteiro de uma vez
+ * ===================================================================== */
+const ChapterDownload = {
+  job: null,
+  CONCURRENCY: 3,
+
+  init() {
+    $('#btnDownload').addEventListener('click', () => (this.job ? this.cancel() : this.start()));
+  },
+
+  cancel() { if (this.job) this.job.cancel = true; },
+
+  async displayedUnit(src) {
+    try { return (await src.locationNow()).u; } catch { return 0; }
+  },
+
+  async start() {
+    const src = BookUI.source;
+    if (!src?.id) return;
+    const missing = missingTtsCreds();
+    if (missing) return handleError(missing);
+    const u = await this.displayedUnit(src);
+    const chunks = await src.getUnit(u);
+    if (!chunks.length) return toast('Não há texto para gerar áudio aqui.');
+    const sig = Settings.signature();
+    const job = { cancel: false, src, u, done: 0, total: chunks.length, error: null };
+    this.job = job;
+    this.render();
+    let next = 0;
+    const worker = async () => {
+      while (!job.cancel && !job.error && next < chunks.length) {
+        const c = next++;
+        const k = AudioStore.key(src.id, sig, u, c);
+        try {
+          if (!(await AudioStore.get(k))) {
+            const r = await TTS.synthesize(chunks[c].text);
+            await AudioStore.put({ k, book: src.id, u, c, blob: r.blob, clientRate: r.clientRate, t: Date.now() });
+          }
+          job.done++;
+          this.render();
+        } catch (e) {
+          job.error = e;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: this.CONCURRENCY }, worker));
+    this.job = null;
+    const what = src.kind === 'pdf' ? 'Página' : 'Capítulo';
+    if (job.error) handleError(job.error);
+    else if (job.cancel) toast(`Download interrompido (${job.done} de ${job.total} trechos guardados).`);
+    else toast(`${what} guardado no aparelho ✓ Reouvir não gasta créditos.`);
+    this.refresh();
+  },
+
+  render() {
+    const j = this.job;
+    if (!j) return;
+    $('#downloadLabel').textContent = `Baixando ${j.done}/${j.total} · cancelar`;
+    $('#btnDownload').classList.add('busy');
+  },
+
+  /** Atualiza o botão conforme o capítulo exibido já esteja guardado ou não. */
+  refresh: debounce(async function () {
+    const self = ChapterDownload;
+    const btn = $('#btnDownload');
+    if (self.job) return self.render();
+    btn.classList.remove('busy');
+    const src = BookUI.source;
+    const what = src?.kind === 'pdf' ? 'página' : 'capítulo';
+    $('#downloadLabel').textContent = `Baixar ${what}`;
+    if (!src?.id) return;
+    const u = await self.displayedUnit(src);
+    const chunks = await src.getUnit(u).catch(() => []);
+    const saved = await AudioStore.countUnit(src.id, Settings.signature(), u);
+    if (BookUI.source !== src || self.job) return;
+    if (chunks.length && saved >= chunks.length) $('#downloadLabel').textContent = `✓ ${what[0].toUpperCase() + what.slice(1)} guardado`;
+    else if (saved > 0) $('#downloadLabel').textContent = `Baixar ${what} (${saved}/${chunks.length})`;
+  }, 300),
 };
 
 /* =====================================================================
@@ -1654,6 +2020,7 @@ const BookUI = {
       $('#bookTitle').textContent = src.title;
       this.fillToc();
       $('#summaryBtnLabel').textContent = kind === 'pdf' ? 'Resumir página' : 'Resumir capítulo';
+      ChapterDownload.refresh();
       src.attach($('#viewer'));
 
       DB.save({ id: src.id, kind, title: src.title, name, size: file.size, blob: file, opened: Date.now() })
@@ -1718,6 +2085,7 @@ const BookUI = {
     const sel = $('#tocSelect');
     const src = this.source;
     if (!src) return;
+    ChapterDownload.refresh();
     if (src.kind === 'pdf') { sel.value = String(loc.page); return; }
     const b = baseName(loc?.start?.href);
     const opt = [...sel.options].find((o) => baseName(o.value) === b);
@@ -1781,6 +2149,7 @@ const BookUI = {
     const open = e.target.closest('.r-open');
     if (del) {
       await DB.del(del.dataset.id).catch(() => {});
+      await AudioStore.deleteBook(del.dataset.id);
       this.renderRecent();
     } else if (open) {
       const rec = await DB.get(open.dataset.id).catch(() => null);
@@ -2099,6 +2468,7 @@ function init() {
   BookUI.init();
   Where.init();
   Summary.init();
+  ChapterDownload.init();
 
   // Ao voltar para o app, leva o livro até o trecho que está tocando (em segundo plano a tela não é movida).
   document.addEventListener('visibilitychange', () => {

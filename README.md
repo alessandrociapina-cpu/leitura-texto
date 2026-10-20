@@ -14,8 +14,10 @@ PWA para ouvir textos, livros ePub e PDFs com as vozes **Neural2** e **Chirp 3 H
   - Ao parar (■), o app mostra **onde você parou**: capítulo, número do parágrafo, começo do parágrafo e a frase aproximada, com um botão para copiar o trecho e buscá-lo no Kindle. Tocar nas informações do player mostra isso a qualquer momento.
   - Os livros abertos recentemente ficam guardados no IndexedDB para reabrir com um toque.
 - **Resumo com Gemini (opcional):** no livro, o botão *Resumir capítulo* (ou *Resumir página*, no PDF) envia o texto do capítulo exibido para a API Gemini e mostra o resumo em um modal. O resumo fica guardado no aparelho, então reabrir não gasta cota. A chave do Gemini é informada em *Configurações* e salva no `localStorage`.
+- **Dois motores de voz:** Google Cloud TTS (Neural2 e Chirp 3 HD) ou OpenAI TTS (`tts-1-hd`, vozes onyx, nova, alloy, echo, fable e shimmer). O motor é escolhido em *Configurações*; o app avisa se a credencial do motor escolhido não estiver preenchida.
+- **Áudios guardados:** cada trecho gerado para um livro fica no IndexedDB do aparelho e é reaproveitado ao reouvir, sem nova chamada à API. O botão *Baixar capítulo* gera o capítulo inteiro de uma vez.
 - **Player fixo:** reproduzir/pausar, voltar e avançar trecho, parar, timer de sono e controles na tela de bloqueio (Media Session).
-- **Configurações:** chave da Service Account (upload ou colar), Gemini API Key e modelo, tipo de voz, voz, velocidade, tom, contador de uso do mês e tema.
+- **Configurações:** chave da Service Account (upload ou colar), OpenAI API Key, Gemini API Key e modelo, motor de voz, tipo de voz, voz, velocidade, tom, contador de uso do mês e tema.
 - **Ajuda:** explica a cobrança e mostra o passo a passo para configurar o Google Cloud.
 - **PWA:** pode ser instalado e recebe textos pelo menu *Compartilhar* do Android (Web Share Target).
 
