@@ -564,6 +564,30 @@ function sentenceAt(text, p) {
  *  - getUnit(i): Promise<chunks[]>
  *  - onChunk(u, c, chunk): chamado quando um trecho começa a tocar
  * ===================================================================== */
+/** Livro de verdade (ePub/PDF), em oposição a texto colado ou resumo. */
+const isBook = (src) => !!src && (src.kind === 'epub' || src.kind === 'pdf');
+
+/** Resumo de um capítulo, lido pelo mesmo player do livro. Um trecho por parágrafo/tópico do resumo. */
+class SummarySource {
+  constructor(book, u, text) {
+    this.kind = 'summary';
+    this.book = book;
+    this.bookU = u;
+    this.text = text;
+    this.title = `Resumo · ${book.unitLabel(u)}`;
+    // Áudio guardado do resumo: chave própria; "Gerar de novo" (texto novo) gera áudio novo.
+    this.id = book.id ? `summary:${book.id}:${u}:${shortHash(text)}` : null;
+    this.storeBook = book.id; // remover o livro da lista também apaga estes áudios
+    const blocks = parseMarkdown(text);
+    this.chunks = makeChunks(blocks.map((b, i) => ({ text: plainMarkdown(b.md), ref: i, heading: b.tag === 'h3' })), { group: false });
+    this.unitCount = 1;
+  }
+  unitLabel() { return this.title; }
+  async getUnit() { return this.chunks; }
+  onChunk(u, c, chunk) { Summary.highlight(this, chunk.para); }
+  onFinish() { Summary.afterListen(this); }
+}
+
 class TextSource {
   constructor(text) {
     this.kind = 'text';
@@ -1107,7 +1131,7 @@ const Player = {
     const saved = k && await AudioStore.get(k);
     if (saved?.blob) return { url: URL.createObjectURL(saved.blob), clientRate: saved.clientRate };
     const r = await TTS.synthesize(text);
-    if (k) AudioStore.put({ k, book: id, u, c, blob: r.blob, clientRate: r.clientRate, t: Date.now() });
+    if (k) AudioStore.put({ k, book: this.source.storeBook || id, u, c, blob: r.blob, clientRate: r.clientRate, t: Date.now() });
     return { url: URL.createObjectURL(r.blob), clientRate: r.clientRate };
   },
 
@@ -1196,6 +1220,7 @@ const Player = {
   finish() {
     this.stopBridge();
     this.setState('idle');
+    if (this.source?.onFinish) { this.source.onFinish(); return; }
     toast(this.source?.kind === 'text' ? 'Fim do texto.' : 'Fim do livro. 🎉');
     this.u = 0; this.c = 0;
   },
@@ -1273,7 +1298,7 @@ const Player = {
 
   saveProgress(chunk) {
     const src = this.source;
-    if (!src?.id) return;
+    if (!src?.id || !isBook(src)) return;
     store.set(K.progress(src.id), {
       u: this.u,
       c: this.c,
@@ -1292,6 +1317,7 @@ const Player = {
     $('#icoPause').hidden = !playing;
     $('#spinner').hidden = s !== 'loading';
     $('#btnPlay').setAttribute('aria-label', playing ? 'Pausar' : 'Reproduzir');
+    try { Summary.syncButton(); } catch { /* ainda inicializando */ }
     // 'loading' conta como tocando: se a sessão de mídia virar 'none' entre trechos, o celular some com os controles.
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : (s === 'paused' ? 'paused' : 'none');
   },
@@ -1300,7 +1326,7 @@ const Player = {
     const src = this.source;
     if (!src) return;
     const chunk = this.chunks[this.c];
-    if (src.kind === 'text') {
+    if (!isBook(src)) {
       const pos = this.chunks.length ? ` · trecho ${this.c + 1}/${this.chunks.length}` : '';
       $('#nowLabel').textContent = `${src.title}${pos}`;
     } else {
@@ -1314,8 +1340,8 @@ const Player = {
     if (!('mediaSession' in navigator) || !window.MediaMetadata) return;
     const src = this.source;
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: src.kind === 'text' ? src.title : src.unitLabel(this.u),
-      artist: src.kind === 'text' ? 'Leitura rápida' : src.title,
+      title: isBook(src) ? src.unitLabel(this.u) : src.title,
+      artist: src.kind === 'summary' ? src.book.title : src.kind === 'text' ? 'Leitura rápida' : src.title,
       album: 'Leitura em Voz',
       artwork: [{ src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' }],
     });
@@ -2423,12 +2449,12 @@ const Where = {
       src.reveal(u, chunk);
     });
     $('.player-info').addEventListener('click', () => {
-      if (Player.source?.kind !== 'text') Player.position().then((p) => this.show(p)).catch(() => {});
+      if (isBook(Player.source)) Player.position().then((p) => this.show(p)).catch(() => {});
     });
   },
 
   show(pos) {
-    if (!pos || pos.src.kind === 'text') return;
+    if (!pos || !isBook(pos.src)) return;
     const { src, u, chunk, chunks, p } = pos;
     const first = chunks.find((ch) => ch.para === chunk.para) || chunk;
     const sentence = sentenceAt(chunk.text, p);
@@ -2530,25 +2556,38 @@ const Gemini = {
   },
 };
 
-/** Markdown simples (títulos, listas, negrito, itálico) → HTML seguro (tudo é escapado antes). */
+/** Markdown simples → blocos [{ tag: 'h3' | 'p' | 'li', md }] (um por título, parágrafo ou tópico). */
+function parseMarkdown(md) {
+  const blocks = [];
+  for (const raw of md.split('\n')) {
+    const line = raw.trimEnd();
+    const li = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
+    const h = line.match(/^#{1,6}\s+(.*)$/);
+    if (li) blocks.push({ tag: 'li', md: li[1] });
+    else if (h) blocks.push({ tag: 'h3', md: h[1] });
+    else if (line.trim()) blocks.push({ tag: 'p', md: line.trim() });
+  }
+  return blocks;
+}
+
+/** Texto para leitura em voz: sem marcas de negrito/itálico. */
+const plainMarkdown = (t) => t.replace(/\*\*(.+?)\*\*/g, '$1').replace(/(^|[^*\w])[*_](?!\s)(.+?)[*_](?![*\w])/g, '$1$2');
+
+/** Markdown simples (títulos, listas, negrito, itálico) → HTML seguro (tudo é escapado antes).
+ *  Cada bloco recebe data-b com seu índice, para destacar o trecho em leitura. */
 function renderMarkdown(md) {
   const esc = (t) => t.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const inline = (t) => esc(t)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*\w])[*_](?!\s)(.+?)[*_](?![*\w])/g, '$1<em>$2</em>');
   const out = [];
-  let items = null;
-  const closeList = () => { if (items) { out.push(`<ul>${items.join('')}</ul>`); items = null; } };
-  for (const raw of md.split('\n')) {
-    const line = raw.trimEnd();
-    const li = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
-    if (li) { (items ||= []).push(`<li>${inline(li[1])}</li>`); continue; }
-    closeList();
-    const h = line.match(/^#{1,6}\s+(.*)$/);
-    if (h) out.push(`<h3>${inline(h[1])}</h3>`);
-    else if (line.trim()) out.push(`<p>${inline(line)}</p>`);
-  }
-  closeList();
+  let inList = false;
+  parseMarkdown(md).forEach((b, i) => {
+    if (b.tag === 'li' && !inList) { out.push('<ul>'); inList = true; }
+    if (b.tag !== 'li' && inList) { out.push('</ul>'); inList = false; }
+    out.push(`<${b.tag} data-b="${i}">${inline(b.md)}</${b.tag}>`);
+  });
+  if (inList) out.push('</ul>');
   return out.join('');
 }
 
@@ -2559,6 +2598,7 @@ const Summary = {
   init() {
     $('#btnSummary').addEventListener('click', () => this.open());
     $('#btnSummaryRedo').addEventListener('click', () => this.open(true));
+    $('#btnSummaryListen').addEventListener('click', () => this.listen());
     $('#btnSummaryCopy').addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(this.ctx?.text || '');
@@ -2633,11 +2673,69 @@ ${text}`;
     }
   },
 
+  /** O resumo exibido é o que está carregado no player? */
+  isPlayingThis() {
+    const ps = Player.source;
+    return ps?.kind === 'summary' && this.ctx && ps.book === this.ctx.src && ps.bookU === this.ctx.u && ps.text === this.ctx.text;
+  },
+
+  /** Ouvir / pausar / continuar o resumo exibido, no mesmo player do livro. */
+  listen() {
+    if (!this.ctx?.text) return;
+    if (this.isPlayingThis()) {
+      if (Player.state === 'playing' || Player.state === 'loading') Player.pause();
+      else Player.toggle();
+      return;
+    }
+    const missing = missingTtsCreds();
+    if (missing) { $('#summaryDialog').close(); return handleError(missing); }
+    Player.unlock();
+    const { src, u, text } = this.ctx;
+    const s = new SummarySource(src, u, text);
+    if (!s.chunks.length) return toast('O resumo não tem texto para ler.');
+    // Guarda onde o livro estava, para voltar a ele quando o resumo acabar.
+    const prev = Player.source;
+    s.resume = isBook(prev) ? { source: prev, u: Player.u, c: Player.c } : prev?.kind === 'summary' ? prev.resume : null;
+    Player.jumpTo(s, 0, 0);
+  },
+
+  highlight(source, para) {
+    const body = $('#summaryBody');
+    $$('[data-b].reading', body).forEach((el) => el.classList.remove('reading'));
+    if (!this.ctx || source.text !== this.ctx.text || para == null) return;
+    const el = $(`[data-b="${para}"]`, body);
+    if (!el) return;
+    el.classList.add('reading');
+    if ($('#summaryDialog').open) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  },
+
+  afterListen(source) {
+    $$('#summaryBody [data-b].reading').forEach((el) => el.classList.remove('reading'));
+    const back = source.resume;
+    if (back && BookUI.source === back.source) {
+      Player.load(back.source, back.u, back.c);
+      toast('Fim do resumo. Toque em ▶ para continuar o livro de onde parou.');
+    } else {
+      toast('Fim do resumo.');
+    }
+  },
+
+  /** Rótulo do botão conforme o estado do player. */
+  syncButton() {
+    const btn = $('#btnSummaryListen');
+    if (!btn) return;
+    const mine = this.isPlayingThis();
+    const playing = mine && (Player.state === 'playing' || Player.state === 'loading');
+    btn.textContent = playing ? '❚❚ Pausar' : mine && Player.state === 'paused' ? '▶ Continuar' : '▶ Ouvir resumo';
+  },
+
   setView(view) {
     $('#summaryLoading').hidden = view !== 'loading';
     $('#summaryError').hidden = view !== 'error';
     $('#summaryBody').hidden = view !== 'done';
     $('#btnSummaryCopy').hidden = view !== 'done';
+    $('#btnSummaryListen').hidden = view !== 'done';
+    this.syncButton();
     $('#btnSummaryRedo').hidden = view === 'loading';
     $('#btnSummaryKey').hidden = true;
   },
@@ -2648,6 +2746,8 @@ ${text}`;
       + `<p class="muted small">Gerado por ${rec.model.replace(/[^\w.-]/g, '')} em ${new Date(rec.t).toLocaleDateString('pt-BR')}. Pode conter imprecisões.</p>`;
     this.setView('done');
     $('#summaryBody').scrollTop = 0;
+    // Reabriu o resumo que está tocando: destaca de novo o trecho atual.
+    if (this.isPlayingThis()) this.highlight(Player.source, Player.chunks[Player.c]?.para);
   },
 
   fail(e) {

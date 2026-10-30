@@ -222,6 +222,7 @@
       <details>
         <summary>✨ Resumo de capítulos com Gemini (opcional)</summary>
         <p>O botão <strong>Resumir capítulo</strong> (no ePub) ou <strong>Resumir página</strong> (no PDF) envia o texto do capítulo exibido para o Gemini e mostra um resumo com os eventos principais e o desenvolvimento dos personagens. O resumo fica guardado neste aparelho, então abrir de novo não gasta cota.</p>
+        <p>Toque em <strong>▶ Ouvir resumo</strong> para ouvi-lo com a mesma voz do livro. O trecho em leitura fica destacado e o áudio também é guardado. Ao terminar, o player volta ao ponto do livro em que você estava: é só tocar em ▶ para continuar.</p>
         <ol>
           <li>Acesse <strong>aistudio.google.com/apikey</strong> com sua conta Google.</li>
           <li>Clique em <strong>Criar chave de API</strong> e escolha um projeto (pode ser o mesmo da Text-to-Speech).</li>
@@ -421,7 +422,8 @@
         <button type="button" id="btnSummaryKey" class="btn ghost small" hidden>Configurar chave</button>
         <button type="button" id="btnSummaryCopy" class="btn ghost small" hidden>Copiar</button>
         <button type="button" id="btnSummaryRedo" class="btn ghost small" hidden>Gerar de novo</button>
-        <button value="close" class="btn primary small">Fechar</button>
+        <button value="close" class="btn ghost small">Fechar</button>
+        <button type="button" id="btnSummaryListen" class="btn primary small" hidden>▶ Ouvir resumo</button>
       </div>
     </form>
   </dialog>

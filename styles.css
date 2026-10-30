@@ -303,4 +303,6 @@ legend { padding: 0 6px; font-weight: 650; font-size: 14px; }
 .summary-body p { margin: 8px 0; }
 .summary-body ul { margin: 6px 0; padding-left: 20px; }
 .summary-body li { margin: 4px 0; }
+.summary-body [data-b] { border-radius: 6px; transition: background-color .2s; }
+.summary-body [data-b].reading { background: color-mix(in srgb, var(--accent) 22%, transparent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
 @media (prefers-reduced-motion: reduce) { .sk-line, .spinner-inline { animation: none; } }
