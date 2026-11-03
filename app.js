@@ -69,9 +69,11 @@ function shortHash(t) {
 
 // Gemini (resumos). O modelo fica configurável porque o Google aposenta versões com frequência;
 // se o escolhido não existir mais (404), tenta o apelido que sempre aponta para o Flash mais recente.
-const GEMINI_MODEL = 'gemini-1.5-flash';
-const GEMINI_FALLBACK = 'gemini-flash-latest';
-const geminiUrl = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+const GEMINI_MODEL = 'gemini-flash-latest';
+const GEMINI_FALLBACK = 'gemini-2.5-flash';
+// Resposta em streaming (SSE): o texto aparece enquanto é escrito, sem esperar o resumo inteiro.
+const geminiUrl = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
+const GEMINI_IDLE_MS = 120_000; // sem nenhum dado do Gemini por este tempo → desiste com erro
 const SUMMARY_MAX_CHARS = 400_000; // capítulos muito longos são cortados antes do envio
 
 const FALLBACK_VOICES = {
@@ -2510,14 +2512,15 @@ const Gemini = {
     }
   },
 
-  async summarize(prompt) {
+  /** onText(textoAtéAgora) é chamado a cada pedaço do resumo que chega. */
+  async summarize(prompt, onText) {
     const cfg = store.get(K.gemini) || {};
     if (!cfg.key) throw new AppError('Configure sua Gemini API Key em Configurações para gerar resumos.', { code: 'NO_GEMINI' });
-    const models = [...new Set([cfg.model || GEMINI_MODEL, GEMINI_FALLBACK])];
+    const models = [...new Set([cfg.model, GEMINI_MODEL, GEMINI_FALLBACK].filter(Boolean))];
     let lastErr;
     for (const model of models) {
       try {
-        return { text: await this.generate(model, cfg.key, prompt), model };
+        return { text: await this.generate(model, cfg.key, prompt, onText), model };
       } catch (e) {
         lastErr = e;
         if (e.status !== 404) throw e;
@@ -2526,33 +2529,86 @@ const Gemini = {
     throw lastErr;
   },
 
-  async generate(model, key, prompt) {
-    let res;
+  /** think = false desliga o raciocínio interno do modelo: num capítulo inteiro ele pode levar minutos
+   *  antes da primeira palavra e não melhora um resumo. Modelos que não aceitam isso recebem o pedido de novo sem a opção. */
+  async generate(model, key, prompt, onText, think = false) {
+    const ctrl = new AbortController();
+    let timer;
+    const arm = () => { clearTimeout(timer); timer = setTimeout(() => ctrl.abort(), GEMINI_IDLE_MS); };
+    const timeoutError = () => new AppError(`O Gemini não respondeu em ${GEMINI_IDLE_MS / 60000} minutos. Tente de novo (se a tela do celular bloqueou ou você trocou de app, a conexão pode ter caído).`, { code: 'NET' });
+    arm();
     try {
-      // A chave vai no cabeçalho x-goog-api-key (equivale ao ?key=, mas não fica em URLs e históricos).
-      res = await fetch(geminiUrl(model), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.4 },
-        }),
-      });
-    } catch {
-      throw new AppError('Sem conexão com o Gemini. Verifique a internet.', { code: 'NET' });
+      let res;
+      try {
+        // A chave vai no cabeçalho x-goog-api-key (equivale ao ?key=, mas não fica em URLs e históricos).
+        res = await fetch(geminiUrl(model), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.4, ...(think ? {} : { thinkingConfig: { thinkingBudget: 0 } }) },
+          }),
+          signal: ctrl.signal,
+        });
+      } catch {
+        throw ctrl.signal.aborted ? timeoutError() : new AppError('Sem conexão com o Gemini. Verifique a internet.', { code: 'NET' });
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 400 && !think && /think|budget/i.test(data?.error?.message || '')) {
+          clearTimeout(timer);
+          return this.generate(model, key, prompt, onText, true);
+        }
+        throw new AppError(describeGeminiError(res.status, data, model), { code: 'GEMINI', status: res.status });
+      }
+
+      let text = '', blocked = '', finish = '';
+      const handle = (data) => {
+        if (data.error) throw new AppError(describeGeminiError(data.error.code || 500, data, model), { code: 'GEMINI', status: data.error.code });
+        blocked ||= data.promptFeedback?.blockReason || '';
+        const cand = data.candidates?.[0];
+        if (cand?.finishReason) finish = cand.finishReason;
+        const piece = (cand?.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || '').join('');
+        if (piece) { text += piece; onText?.(text); }
+      };
+      const handleLine = (line) => {
+        if (!line.startsWith('data:')) return;
+        let data;
+        try { data = JSON.parse(line.slice(5)); } catch { return; }
+        handle(data);
+      };
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        let r;
+        try {
+          r = await reader.read();
+        } catch {
+          throw ctrl.signal.aborted ? timeoutError() : new AppError('A conexão com o Gemini caiu no meio do resumo. Tente de novo.', { code: 'NET' });
+        }
+        if (r.done) break;
+        arm();
+        buf += decoder.decode(r.value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          handleLine(buf.slice(0, i).trim());
+          buf = buf.slice(i + 1);
+        }
+      }
+      handleLine((buf + decoder.decode()).trim());
+
+      if (blocked) throw new AppError(`O Gemini recusou este texto (${blocked}).`);
+      text = text.trim();
+      if (!text) {
+        throw new AppError(finish === 'SAFETY'
+          ? 'O Gemini bloqueou o resumo pelos filtros de segurança.'
+          : 'O Gemini não retornou texto. Tente de novo.');
+      }
+      return text;
+    } finally {
+      clearTimeout(timer);
     }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new AppError(describeGeminiError(res.status, data, model), { code: 'GEMINI', status: res.status });
-    const blocked = data.promptFeedback?.blockReason;
-    if (blocked) throw new AppError(`O Gemini recusou este texto (${blocked}).`);
-    const cand = data.candidates?.[0];
-    const text = (cand?.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || '').join('').trim();
-    if (!text) {
-      throw new AppError(cand?.finishReason === 'SAFETY'
-        ? 'O Gemini bloqueou o resumo pelos filtros de segurança.'
-        : 'O Gemini não retornou texto. Tente de novo.');
-    }
-    return text;
   },
 };
 
@@ -2594,6 +2650,8 @@ function renderMarkdown(md) {
 const Summary = {
   ctx: null,
   gen: 0,
+  pending: new Map(), // resumos sendo gerados: chave → { promise, t0, text } (reabrir o modal não pede de novo)
+  timer: 0,
 
   init() {
     $('#btnSummary').addEventListener('click', () => this.open());
@@ -2645,31 +2703,64 @@ ${text}`;
     let u = 0;
     try { ({ u } = await src.locationNow()); } catch { /* usa o início */ }
     const label = src.unitLabel(u);
-    this.ctx = { src, u, text: '' };
+    const cacheKey = K.summary(src.id, u);
+    this.ctx = { src, u, text: '', key: cacheKey };
 
     $('#summaryTitle').textContent = src.kind === 'pdf' ? 'Resumo da página' : 'Resumo do capítulo';
     $('#summaryMeta').textContent = `${src.title} · ${label}`;
     const dlg = $('#summaryDialog');
     if (!dlg.open) dlg.showModal();
 
-    const cacheKey = K.summary(src.id, u);
-    const cached = !force && store.get(cacheKey);
+    let job = this.pending.get(cacheKey);
+    const cached = !force && !job && store.get(cacheKey);
     if (cached?.text) return this.show(cached);
-    if (!Gemini.has()) {
+    if (!job && !Gemini.has()) {
       return this.fail(new AppError('Para gerar resumos, cole sua Gemini API Key em Configurações. Veja na Ajuda como criar uma de graça.', { code: 'NO_GEMINI' }));
     }
 
     this.setView('loading');
+    if (!job) {
+      const j = { t0: Date.now(), text: '' };
+      j.promise = this.generate(src, u, label, (t) => { j.text = t; this.progress(cacheKey); })
+        .then((rec) => { store.set(cacheKey, rec); return rec; }) // guarda mesmo se o modal já foi fechado
+        .finally(() => this.pending.delete(cacheKey));
+      this.pending.set(cacheKey, j);
+      job = j;
+    }
+    this.progress(cacheKey);
+    clearInterval(this.timer);
+    this.timer = setInterval(() => this.progress(cacheKey), 1000);
     try {
-      let text = await this.unitText(src, u);
-      if (!text.trim()) throw new AppError(src.kind === 'pdf' ? 'Esta página não tem texto para resumir.' : 'Este capítulo não tem texto para resumir.');
-      if (text.length > SUMMARY_MAX_CHARS) text = text.slice(0, SUMMARY_MAX_CHARS) + '\n\n[texto cortado por ser muito longo]';
-      const r = await Gemini.summarize(this.buildPrompt(src, label, text));
-      const rec = { text: r.text, model: r.model, t: Date.now() };
-      store.set(cacheKey, rec); // guarda mesmo se o modal já foi fechado
-      if (gen === this.gen && this.ctx?.src === src) this.show(rec);
+      const rec = await job.promise;
+      if (gen === this.gen && this.ctx?.key === cacheKey) this.show(rec);
     } catch (e) {
-      if (gen === this.gen) this.fail(e);
+      if (gen === this.gen && this.ctx?.key === cacheKey) this.fail(e);
+    } finally {
+      if (gen === this.gen) clearInterval(this.timer);
+    }
+  },
+
+  async generate(src, u, label, onText) {
+    let text = await this.unitText(src, u);
+    if (!text.trim()) throw new AppError(src.kind === 'pdf' ? 'Esta página não tem texto para resumir.' : 'Este capítulo não tem texto para resumir.');
+    if (text.length > SUMMARY_MAX_CHARS) text = text.slice(0, SUMMARY_MAX_CHARS) + '\n\n[texto cortado por ser muito longo]';
+    const r = await Gemini.summarize(this.buildPrompt(src, label, text), onText);
+    return { text: r.text, model: r.model, t: Date.now() };
+  },
+
+  /** Tela de espera: tempo decorrido e o resumo à medida que o Gemini escreve. */
+  progress(key) {
+    const job = this.pending.get(key);
+    if (!job || this.ctx?.key !== key || $('#summaryLoading').hidden) return;
+    const s = Math.round((Date.now() - job.t0) / 1000);
+    $('#summaryLoadingText').textContent = job.text ? `Escrevendo o resumo… ${s} s` : `Gerando resumo com o Gemini… ${s} s`;
+    $('#summaryLoading').classList.toggle('streaming', !!job.text);
+    if (job.text && job.text !== this.shownPartial) {
+      this.shownPartial = job.text;
+      const body = $('#summaryBody');
+      body.innerHTML = renderMarkdown(job.text);
+      body.hidden = false;
+      body.scrollTop = body.scrollHeight;
     }
   },
 
@@ -2730,6 +2821,9 @@ ${text}`;
   },
 
   setView(view) {
+    if (view !== 'loading') clearInterval(this.timer);
+    this.shownPartial = '';
+    $('#summaryLoading').classList.remove('streaming');
     $('#summaryLoading').hidden = view !== 'loading';
     $('#summaryError').hidden = view !== 'error';
     $('#summaryBody').hidden = view !== 'done';

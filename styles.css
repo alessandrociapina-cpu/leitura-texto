@@ -285,6 +285,7 @@ legend { padding: 0 6px; font-weight: 650; font-size: 14px; }
 
 /* ========== Resumo (Gemini) ========== */
 .skeleton { display: grid; gap: 10px; margin: 14px 0 4px; }
+.skeleton.streaming .sk-line { display: none; } /* o texto já está chegando: mostra o resumo parcial */
 .sk-line {
   height: 12px; border-radius: 6px;
   background: linear-gradient(90deg, var(--surface-2) 25%, color-mix(in srgb, var(--surface-2) 60%, var(--text) 12%) 50%, var(--surface-2) 75%);

@@ -359,7 +359,7 @@
         <label class="label" for="geminiKey">Gemini API Key</label>
         <input type="password" id="geminiKey" placeholder="Cole sua chave aqui" autocomplete="off" spellcheck="false">
         <label class="label" for="geminiModel">Modelo</label>
-        <input type="text" id="geminiModel" placeholder="gemini-1.5-flash" autocomplete="off" spellcheck="false">
+        <input type="text" id="geminiModel" placeholder="gemini-flash-latest" autocomplete="off" spellcheck="false">
         <div class="row">
           <button type="button" id="btnSaveGemini" class="btn primary">Salvar</button>
           <button type="button" id="btnDeleteGemini" class="btn danger ghost">Remover</button>
@@ -414,7 +414,7 @@
       <div id="summaryLoading" class="skeleton" hidden aria-live="polite">
         <div class="sk-line"></div><div class="sk-line"></div><div class="sk-line short"></div>
         <div class="sk-line"></div><div class="sk-line short"></div>
-        <p class="muted small"><span class="spinner-inline"></span> Gerando resumo com o Gemini…</p>
+        <p class="muted small"><span class="spinner-inline"></span> <span id="summaryLoadingText">Gerando resumo com o Gemini…</span></p>
       </div>
       <div id="summaryError" class="note warn" hidden></div>
       <article id="summaryBody" class="summary-body" hidden></article>
